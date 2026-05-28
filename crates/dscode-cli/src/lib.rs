@@ -6,7 +6,7 @@ use clap::{Parser, Subcommand};
 #[derive(Debug, Parser)]
 #[command(
     name = "dscode",
-    version = "0.1.0",
+    version = env!("CARGO_PKG_VERSION"),
     about = "Mobile-first AI agent powered by DeepSeek",
     long_about = "dscode is a mobile-first AI coding agent built on CodeWhale.\n\
                    It connects directly to DeepSeek's API and works entirely\n\
