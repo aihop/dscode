@@ -50,6 +50,9 @@ pub enum Commands {
     /// Manage tools
     #[command(subcommand)]
     Tools(commands::tools::ToolCommands),
+
+    /// Generate shell completions
+    Completion(commands::completion::CompletionArgs),
 }
 
 pub fn run() -> std::process::ExitCode {
@@ -92,6 +95,9 @@ pub fn run() -> std::process::ExitCode {
         }
         Some(Commands::Tools(cmd)) => {
             rt.block_on(commands::tools::run(cmd));
+        }
+        Some(Commands::Completion(args)) => {
+            commands::completion::run(args);
         }
         None => {
             // default: chat auto-resume latest session

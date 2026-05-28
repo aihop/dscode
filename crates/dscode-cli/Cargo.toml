@@ -17,6 +17,7 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true
+clap_complete.workspace = true
 futures-util.workspace = true
 clap = { workspace = true, features = ["derive", "env"] }
 chrono.workspace = true
