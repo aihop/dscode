@@ -148,6 +148,11 @@ pub async fn call_stream(
                 },
             };
             if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(data) {
+                // Capture exact usage from final chunk (some APIs send usage in non-choice chunks)
+                if let Some(u) = parsed.get("usage") {
+                    if let Some(t) = u["completion_tokens"].as_u64() { usage.tokens_out = t; }
+                    if let Some(t) = u["completion_tokens_details"]["reasoning_tokens"].as_u64() { usage.reasoning_tokens = t; }
+                }
                 // R1 reasoning content — show dimmed before answer
                 if let Some(rt) = parsed["choices"][0]["delta"]["reasoning_content"].as_str() {
                     usage.reasoning_tokens += rt.len() as u64 / 4;
