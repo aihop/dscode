@@ -19,6 +19,8 @@ pub struct ChatArgs {
     pub session: Option<String>,
     #[arg(short = 'n', long, help = "Start fresh session (don't resume last)")]
     pub new: bool,
+    #[arg(long, help = "System prompt (set once, persists in config)")]
+    pub system: Option<String>,
     #[arg(long, help = "Disable streaming output")]
     pub no_stream: bool,
 }
@@ -154,9 +156,16 @@ pub async fn run(args: &ChatArgs) {
             }
         }
 
-        let api_msgs: Vec<serde_json::Value> = messages.iter().map(|m| {
+        let mut api_msgs: Vec<serde_json::Value> = Vec::new();
+        // Prepend system prompt if set
+        if let Some(sp) = &args.system {
+            if !sp.is_empty() {
+                api_msgs.push(serde_json::json!({"role": "system", "content": sp}));
+            }
+        }
+        api_msgs.extend(messages.iter().map(|m| {
             serde_json::json!({"role": m.role, "content": m.content})
-        }).collect();
+        }));
 
         if stream {
             match api::call_stream(&client, &base_url, &api_key, &model, &api_msgs, narrow, tw).await {

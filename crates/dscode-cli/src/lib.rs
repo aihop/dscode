@@ -105,6 +105,7 @@ pub fn run() -> std::process::ExitCode {
                 model: None,
                 session: None,
                 new: false,
+                system: None,
                 no_stream: false,
             }));
         }
