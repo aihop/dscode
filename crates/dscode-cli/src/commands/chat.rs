@@ -126,11 +126,13 @@ pub async fn run(args: &ChatArgs) {
 
         let mut input = String::new();
         match io::stdin().read_line(&mut input) {
-            Ok(0) => break,
+            Ok(0) => break,                    // EOF
             Ok(_) => {}
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => {
+                println!(); break;              // Ctrl+C: clean exit
+            }
             Err(e) => {
-                eprintln!("\nerror: {e}");
-                break;
+                eprintln!("\nerror: {e}"); break;
             }
         }
 
@@ -389,8 +391,18 @@ async fn call_stream(
     let mut col: u16 = 0;
     let max_col = terminal_width().saturating_sub(2);
 
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk?;
+    loop {
+        let chunk = match stream.next().await {
+            Some(Ok(c)) => c,
+            Some(Err(e)) => {
+                // Interrupted during stream (Ctrl+C)
+                if e.is_timeout() || e.is_connect() {
+                    eprintln!("\n[connection interrupted]");
+                }
+                break;
+            }
+            None => break,
+        };
         for line in String::from_utf8_lossy(&chunk).lines() {
             let data = match line.trim() {
                 l if l.is_empty() || l == "data: [DONE]" => continue,
