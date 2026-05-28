@@ -10,6 +10,11 @@ description = "Mobile-first AI agent powered by DeepSeek"
 name = "dscode"
 path = "src/main.rs"
 
+# Short alias — forwards to dscode silently
+[[bin]]
+name = "dsc"
+path = "src/main.rs"
+
 [dependencies]
 anyhow.workspace = true
 futures-util.workspace = true
