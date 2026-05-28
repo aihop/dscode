@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>dscode — AI agent in your pocket</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, 'SF Mono', 'Fira Code', 'JetBrains Mono', monospace;
+    background: #0d1117;
+    color: #c9d1d9;
+    line-height: 1.6;
+    padding: 2rem 1rem;
+    max-width: 720px;
+    margin: 0 auto;
+  }
+  @media (max-width: 600px) {
+    body { padding: 1.2rem 0.8rem; font-size: 15px; }
+    pre  { font-size: 13px; }
+  }
+  h1 { font-size: 2rem; font-weight: 700; color: #58a6ff; margin-bottom: 0.3rem; }
+  h1 span { color: #3fb950; }
+  .sub { color: #8b949e; margin-bottom: 2rem; }
+  pre {
+    background: #161b22;
+    border: 1px solid #30363d;
+    border-radius: 8px;
+    padding: 1rem;
+    overflow-x: auto;
+    font-size: 14px;
+    margin: 1rem 0;
+  }
+  code { font-family: inherit; }
+  .cmd { color: #7ee787; }
+  .comment { color: #8b949e; }
+  .prompt { color: #58a6ff; }
+  .section { margin: 2rem 0; }
+  .section h2 { font-size: 1.2rem; color: #f0f6fc; margin-bottom: 0.8rem; }
+  .section ul { list-style: none; }
+  .section li::before { content: "▸ "; color: #3fb950; }
+  .section li { margin: 0.4rem 0; padding-left: 0.5rem; }
+  a { color: #58a6ff; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  footer { margin-top: 3rem; padding-top: 1.5rem; border-top: 1px solid #21262d; color: #8b949e; font-size: 0.85rem; text-align: center; }
+  .badge { display: inline-block; background: #21262d; border-radius: 20px; padding: 0.2rem 0.7rem; font-size: 0.8rem; margin-right: 0.4rem; }
+</style>
+</head>
+<body>
+
+<h1>dscode<span>.</span></h1>
+<div class="sub">AI agent in your pocket · powered by DeepSeek</div>
+
+<pre><span class="prompt">$</span> curl -fsSL https://dscode.org/install.sh | sh
+<span class="prompt">$</span> dscode auth login
+<span class="prompt">$</span> dscode chat</pre>
+
+<div class="section">
+  <h2>Why dscode?</h2>
+  <ul>
+    <li>Pure CLI — no web UI, no TUI, no bloat</li>
+    <li>Mobile-first — SSH from your phone, Termux, iSH</li>
+    <li>DeepSeek-native — V4 Pro, V4 Flash, R1, V3</li>
+    <li>Single 7.5MB binary — statically linked, ARM-ready</li>
+    <li>Streaming responses — see tokens as they arrive</li>
+    <li>Session persistence — pick up where you left off</li>
+  </ul>
+</div>
+
+<div class="section">
+  <h2>Install</h2>
+  <pre><span class="comment"># One line (recommended)</span>
+<span class="prompt">$</span> <span class="cmd">curl -fsSL https://dscode.org/install.sh | sh</span>
+
+<span class="comment"># Or with Cargo</span>
+<span class="prompt">$</span> <span class="cmd">cargo install dscode</span>
+
+<span class="comment"># Or build from source</span>
+<span class="prompt">$</span> <span class="cmd">git clone --recursive https://github.com/Hmbown/dscode</span>
+<span class="prompt">$</span> <span class="cmd">cd dscode && cargo build --release -p dscode</span></pre>
+</div>
+
+<div class="section">
+  <h2>Quickstart</h2>
+  <pre><span class="comment"># Set your API key</span>
+<span class="prompt">$</span> <span class="cmd">dscode auth login</span>
+Enter your DeepSeek API key: <span class="comment">sk-...</span>
+
+<span class="comment"># Start chatting</span>
+<span class="prompt">$</span> <span class="cmd">dscode chat</span>
+
+<span class="comment"># One-shot prompt</span>
+<span class="prompt">$</span> <span class="cmd">dscode run "write fibonacci in python"</span>
+
+<span class="comment"># Use Flash model for speed</span>
+<span class="prompt">$</span> <span class="cmd">dscode chat -m flash</span></pre>
+</div>
+
+<div class="section">
+  <h2>Commands</h2>
+  <pre>  chat      Interactive chat with DeepSeek
+  run       Single prompt, stream response
+  auth      Login / logout / status
+  config    View or change settings
+  session   List, resume, export conversations
+  model     List models and capabilities
+  tools     Manage tool access</pre>
+</div>
+
+<div class="section">
+  <h2>On your phone</h2>
+  <pre><span class="comment"># Termux (Android)</span>
+<span class="prompt">$</span> pkg install curl
+<span class="prompt">$</span> <span class="cmd">curl -fsSL https://dscode.org/install.sh | sh</span>
+<span class="prompt">$</span> dscode auth login
+<span class="prompt">$</span> dscode chat
+
+<span class="comment"># SSH from anywhere</span>
+<span class="prompt">$</span> ssh user@your-server
+<span class="prompt">$</span> dscode chat
+
+<span class="comment"># iSH (iOS)</span>
+<span class="prompt">$</span> apk add curl
+<span class="prompt">$</span> <span class="cmd">curl -fsSL https://dscode.org/install.sh | sh</span></pre>
+  <p style="color:#8b949e;margin-top:0.5rem;">Auto-detects narrow terminals. No horizontal scroll on phone screens.</p>
+</div>
+
+<div class="section">
+  <h2>Architecture</h2>
+  <pre>dscode CLI ──► DeepSeek API ──► V4 Pro / V4 Flash
+     │
+     ├── CodeWhale engine (agent + tools)
+     ├── SQLite session store
+     └── Narrow-terminal renderer</pre>
+  <p style="color:#8b949e;margin-top:0.5rem;">Built on <a href="https://github.com/Hmbown/CodeWhale">CodeWhale</a> — 35k+ stars, MIT license.</p>
+</div>
+
+<footer>
+  <span class="badge">MIT</span>
+  <span class="badge">Rust</span>
+  <span class="badge">DeepSeek</span>
+  <span class="badge">ARM64</span>
+  <br><br>
+  <a href="https://github.com/Hmbown/dscode">GitHub</a> · dscode.org
+</footer>
+
+</body>
+</html>
