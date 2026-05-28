@@ -13,6 +13,8 @@ pub enum AuthCommands {
     Logout,
     /// Show authentication status
     Status,
+    /// Test API key by calling DeepSeek API
+    Test,
 }
 
 pub async fn run(cmd: &AuthCommands) {
@@ -20,6 +22,7 @@ pub async fn run(cmd: &AuthCommands) {
         AuthCommands::Login { api_key } => login(api_key.as_deref()),
         AuthCommands::Logout => logout(),
         AuthCommands::Status => status(),
+        AuthCommands::Test => test().await,
     }
 }
 
@@ -133,6 +136,58 @@ fn status() {
         println!("✗ No API key found");
         println!("  Run `dscode auth login` to set one up");
     }
+}
+
+async fn test() {
+    let api_key = resolve_api_key_from_store();
+    match &api_key {
+        Some(k) if !k.trim().is_empty() => {
+            println!("Testing API key: ...{}", &k[k.len().saturating_sub(4)..]);
+            let client = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(10))
+                .build()
+                .unwrap();
+            match client
+                .get("https://api.deepseek.com/models")
+                .header("Authorization", format!("Bearer {k}"))
+                .header("Accept", "application/json")
+                .send()
+                .await
+            {
+                Ok(resp) if resp.status().is_success() => {
+                    println!("✓ API key is valid");
+                    println!("  status: {}", resp.status());
+                }
+                Ok(resp) => {
+                    println!("✗ API key rejected (status {})", resp.status());
+                    println!("  The key may be invalid or expired");
+                }
+                Err(e) => {
+                    println!("✗ Connection failed: {e}");
+                }
+            }
+        }
+        _ => {
+            println!("No API key configured");
+            println!("  Run: dscode auth login");
+        }
+    }
+}
+
+fn resolve_api_key_from_store() -> Option<String> {
+    if let Ok(k) = std::env::var("DEEPSEEK_API_KEY") {
+        if !k.trim().is_empty() { return Some(k); }
+    }
+    let mut path = config_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
+    if let Ok(store) = ConfigStore::load(Some(path)) {
+        if let Some(k) = store.config.api_key {
+            if !k.trim().is_empty() { return Some(k); }
+        }
+    }
+    None
 }
 
 fn print_source(name: &str, present: bool, last4: Option<&str>) {
