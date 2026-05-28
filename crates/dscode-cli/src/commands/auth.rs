@@ -50,10 +50,15 @@ fn login(api_key: Option<&str>) {
     let key = match api_key {
         Some(k) => k.trim().to_string(),
         None => {
-            print!("Enter your DeepSeek API key: ");
-            io::stdout().flush().unwrap();
-            let mut input = String::new();
-            io::stdin().read_line(&mut input).unwrap();
+            let input = rpassword::prompt_password("Enter your DeepSeek API key: ")
+                .unwrap_or_else(|_| {
+                    // fallback if rpassword fails (e.g. no tty)
+                    print!("Enter your DeepSeek API key: ");
+                    io::stdout().flush().unwrap();
+                    let mut buf = String::new();
+                    io::stdin().read_line(&mut buf).unwrap();
+                    buf
+                });
             input.trim().to_string()
         }
     };
