@@ -32,12 +32,12 @@ sha2.workspace = true
 uuid.workspace = true
 reqwest.workspace = true
 
-codewhale-agent = { path = "../../vendor/CodeWhale/crates/agent" }
-codewhale-config = { path = "../../vendor/CodeWhale/crates/config" }
-codewhale-core = { path = "../../vendor/CodeWhale/crates/core" }
-codewhale-execpolicy = { path = "../../vendor/CodeWhale/crates/execpolicy" }
-codewhale-state = { path = "../../vendor/CodeWhale/crates/state" }
-codewhale-tools = { path = "../../vendor/CodeWhale/crates/tools" }
-codewhale-mcp = { path = "../../vendor/CodeWhale/crates/mcp" }
+codewhale-agent = "0.8"
+codewhale-config = "0.8"
+codewhale-core = "0.8"
+codewhale-execpolicy = "0.8"
+codewhale-state = "0.8"
+codewhale-tools = "0.8"
+codewhale-mcp = "0.8"
 
 [dev-dependencies]
