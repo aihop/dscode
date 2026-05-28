@@ -88,6 +88,27 @@ fn list() {
     println!("  Resume: dscode chat -s <id>");
 }
 
+fn rename(id: &str, name: &str) {
+    let path = session_path(id);
+    if !path.exists() {
+        eprintln!("session '{id}' not found");
+        return;
+    }
+    let content = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(e) => { eprintln!("error: {e}"); return; }
+    };
+    let mut data: serde_json::Value = match serde_json::from_str(&content) {
+        Ok(d) => d,
+        Err(_) => { eprintln!("session '{id}' is corrupted"); return; }
+    };
+    data["name"] = serde_json::Value::String(name.to_string());
+    match std::fs::write(&path, serde_json::to_string_pretty(&data).unwrap()) {
+        Ok(_) => println!("✓ renamed to '{name}'"),
+        Err(e) => eprintln!("error: {e}"),
+    }
+}
+
 fn show(id: &str) {
     let path = sessions_dir().join(format!("{id}.json"));
     if !path.exists() {
