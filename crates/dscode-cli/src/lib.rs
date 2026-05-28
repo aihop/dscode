@@ -94,10 +94,11 @@ pub fn run() -> std::process::ExitCode {
             rt.block_on(commands::tools::run(cmd));
         }
         None => {
-            // default: chat with default model
+            // default: chat auto-resume latest session
             rt.block_on(commands::chat::run(&commands::chat::ChatArgs {
                 model: None,
                 session: None,
+                new: false,
                 no_stream: false,
             }));
         }

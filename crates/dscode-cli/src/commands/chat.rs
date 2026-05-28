@@ -17,6 +17,8 @@ pub struct ChatArgs {
     pub model: Option<String>,
     #[arg(short = 's', long, help = "Resume session by ID (prefix OK)")]
     pub session: Option<String>,
+    #[arg(short = 'n', long, help = "Start fresh session (don't resume last)")]
+    pub new: bool,
     #[arg(long, help = "Disable streaming output")]
     pub no_stream: bool,
 }
@@ -52,20 +54,20 @@ pub async fn run(args: &ChatArgs) {
     let base_url = resolve_base_url();
     let client = reqwest::Client::new();
 
-    // Session resume
+    // Session resume: explicit -s, or auto-resume latest, or --new
     let (_session_id, mut messages) = if let Some(sid) = &args.session {
         match load_session(sid) {
-            Some(s) => {
-                eprintln!("(resumed session {})", &s.id[..8]);
-                (s.id, s.messages)
-            }
-            None => {
-                eprintln!("session '{sid}' not found, starting new");
-                (Uuid::new_v4().to_string(), Vec::new())
-            }
+            Some(s) => { eprintln!("(resumed session {})", &s.id[..8]); (s.id, s.messages) }
+            None => { eprintln!("session '{sid}' not found, starting new"); (Uuid::new_v4().to_string(), Vec::new()) }
         }
-    } else {
+    } else if args.new {
         (Uuid::new_v4().to_string(), Vec::new())
+    } else {
+        // Auto-resume: find the most recent session
+        match latest_session() {
+            Some(s) => { eprintln!("(resumed latest session {})", &s.id[..8]); (s.id, s.messages) }
+            None => (Uuid::new_v4().to_string(), Vec::new())
+        }
     };
 
     let narrow = is_narrow_terminal();
@@ -156,18 +158,22 @@ pub async fn run(args: &ChatArgs) {
             serde_json::json!({"role": m.role, "content": m.content})
         }).collect();
 
-        match api::call_stream(&client, &base_url, &api_key, &model, &api_msgs, narrow, tw).await {
-            Ok((reply, usage)) => {
-                messages.push(Message { role: "assistant".into(), content: reply, created_at: Utc::now().timestamp() });
-                // Compact usage line on narrow terminals
-                if narrow {
-                    eprintln!("─ {:.1}s {:.0} tok", usage.tokens_out as f64 / 30.0, usage.tokens_out);
+        if stream {
+            match api::call_stream(&client, &base_url, &api_key, &model, &api_msgs, narrow, tw).await {
+                Ok((reply, usage)) => {
+                    messages.push(Message { role: "assistant".into(), content: reply, created_at: Utc::now().timestamp() });
+                    if narrow { eprintln!("─ {:.0} tok", usage.tokens_out); }
+                    save_session(&model, &messages);
                 }
-                save_session(&model, &messages);
+                Err(e) => { eprintln!("\nerror: {e}"); messages.pop(); }
             }
-            Err(e) => {
-                eprintln!("\nerror: {e}");
-                messages.pop();
+        } else {
+            match api::call_nonstream(&client, &base_url, &api_key, &model, &api_msgs).await {
+                Ok((reply, usage)) => {
+                    messages.push(Message { role: "assistant".into(), content: reply, created_at: Utc::now().timestamp() });
+                    save_session(&model, &messages);
+                }
+                Err(e) => { eprintln!("\nerror: {e}"); messages.pop(); }
             }
         }
     }
@@ -213,6 +219,27 @@ fn find_matching_session(messages: &[Message]) -> Option<String> {
         }
     }
     None
+}
+
+/// Find the most recently updated session
+fn latest_session() -> Option<Session> {
+    let dir = session_dir();
+    if !dir.exists() { return None; }
+    let mut latest: Option<(i64, Session)> = None;
+    for entry in std::fs::read_dir(dir).ok()?.flatten() {
+        let path = entry.path();
+        if path.extension().is_some_and(|e| e == "json") {
+            if let Ok(c) = std::fs::read_to_string(&path) {
+                if let Ok(s) = serde_json::from_str::<Session>(&c) {
+                    let ts = s.updated_at;
+                    if latest.as_ref().map_or(true, |(t, _)| ts > *t) {
+                        latest = Some((ts, s));
+                    }
+                }
+            }
+        }
+    }
+    latest.map(|(_, s)| s)
 }
 
 fn load_session(id: &str) -> Option<Session> {
