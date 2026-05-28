@@ -1,4 +1,5 @@
 use clap::Subcommand;
+use serde_json::Value;
 
 #[derive(Debug, Subcommand)]
 pub enum SessionCommands {
@@ -6,6 +7,8 @@ pub enum SessionCommands {
     List,
     /// Show session details
     Show { id: String },
+    /// Rename a session
+    Rename { id: String, name: String },
     /// Delete a session
     #[command(alias = "rm")]
     Delete { id: String },
@@ -17,6 +20,7 @@ pub async fn run(cmd: &SessionCommands) {
     match cmd {
         SessionCommands::List => list(),
         SessionCommands::Show { id } => show(id),
+        SessionCommands::Rename { id, name } => rename(id, name),
         SessionCommands::Delete { id } => delete(id),
         SessionCommands::Export { id } => export(id),
     }
