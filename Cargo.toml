@@ -1,0 +1,42 @@
+[workspace]
+members = [
+    "crates/dscode-cli",
+    "vendor/CodeWhale/crates/agent",
+    "vendor/CodeWhale/crates/config",
+    "vendor/CodeWhale/crates/core",
+    "vendor/CodeWhale/crates/execpolicy",
+    "vendor/CodeWhale/crates/hooks",
+    "vendor/CodeWhale/crates/mcp",
+    "vendor/CodeWhale/crates/protocol",
+    "vendor/CodeWhale/crates/secrets",
+    "vendor/CodeWhale/crates/state",
+    "vendor/CodeWhale/crates/tools",
+    "vendor/CodeWhale/crates/cli",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "MIT"
+repository = "https://github.com/Hmbown/dscode"
+
+[workspace.dependencies]
+anyhow = "1.0.100"
+async-trait = "0.1.89"
+chrono = { version = "0.4.43", features = ["serde"] }
+clap = { version = "4.5.54", features = ["derive"] }
+clap_complete = "4.5"
+dirs = "6.0.0"
+reqwest = { version = "0.13.1", default-features = false, features = ["json", "rustls"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+semver = "1.0.28"
+thiserror = "2.0"
+tokio = { version = "1.49.0", features = ["full"] }
+toml = "0.9.7"
+sha2 = "0.10"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+uuid = { version = "1.11", features = ["v4"] }

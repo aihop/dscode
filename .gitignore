@@ -1,0 +1,18 @@
+# Rust
+target/
+*.rs.bk
+Cargo.lock
+
+# macOS
+.DS_Store
+*.swp
+*.swo
+*~
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# dscode local config (user-specific)
+.dscode/
