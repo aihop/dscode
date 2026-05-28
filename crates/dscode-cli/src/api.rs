@@ -126,6 +126,8 @@ pub async fn call_stream(
     }
 
     let mut full = String::new();
+    let mut reasoning = String::new();
+    let mut showed_reasoning = false;
     let mut stream = response.bytes_stream();
     let mut col: u16 = 0;
     let max_col = terminal_width.saturating_sub(2);
@@ -146,13 +148,27 @@ pub async fn call_stream(
                 },
             };
             if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(data) {
-                // Track reasoning tokens (R1 model)
+                // R1 reasoning content — show dimmed before answer
                 if let Some(rt) = parsed["choices"][0]["delta"]["reasoning_content"].as_str() {
                     usage.reasoning_tokens += rt.len() as u64 / 4;
+                    reasoning.push_str(rt);
+                    if !showed_reasoning {
+                        showed_reasoning = true;
+                        eprint!("\n[reasoning] ");
+                    }
+                    for line in rt.lines() {
+                        eprint!("{line}");
+                        io::stderr().flush().ok();
+                    }
                 }
                 if let Some(delta) = parsed["choices"][0]["delta"]["content"].as_str() {
+                    // End reasoning display if we showed it
+                    if showed_reasoning {
+                        showed_reasoning = false;
+                        eprintln!();
+                    }
                     full.push_str(delta);
-                    usage.tokens_out += delta.len() as u64 / 4; // rough est
+                    usage.tokens_out += delta.len() as u64 / 4;
                     if narrow {
                         for ch in delta.chars() {
                             if ch == '\n' { col = 0; }
@@ -171,6 +187,8 @@ pub async fn call_stream(
             }
         }
     }
+    // Close reasoning display if still open (response had only reasoning)
+    if showed_reasoning { eprintln!(); }
     println!();
     Ok((full, usage))
 }
