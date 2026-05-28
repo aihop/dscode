@@ -1,5 +1,6 @@
 use clap::Args;
 use codewhale_agent::ModelRegistry;
+use codewhale_config::ProviderKind;
 
 #[derive(Debug, Args)]
 pub struct ModelArgs {
@@ -21,34 +22,31 @@ fn list(registry: &ModelRegistry) {
 
     println!("Available models");
     println!();
-    println!("  {:<30} tools  reasoning", "id");
-    println!("  ─────────────────────────────────────────");
+    println!("  {:<32} tools  reasoning", "id");
+    println!("  {}───────────────", "─".repeat(32));
 
     for model in models {
         let tools = if model.supports_tools { "✓" } else { " " };
         let reasoning = if model.supports_reasoning { "✓" } else { " " };
-        println!("  {:<30} {tools}      {reasoning}", model.id);
+        println!("  {:<32} {tools}      {reasoning}", model.id);
     }
 
     println!();
-    println!("  DeepSeek models are available via api.deepseek.com");
+    println!("  DeepSeek models available via api.deepseek.com");
     println!("  Set your API key with `dscode auth login`");
 }
 
 fn info(registry: &ModelRegistry, name: &str) {
-    match registry.resolve(name) {
-        Some(info) => {
-            println!("Model: {}", info.id);
-            println!("  provider: {:?}", info.provider);
-            println!("  tools:    {}", info.supports_tools);
-            println!("  reasoning: {}", info.supports_reasoning);
-            if !info.aliases.is_empty() {
-                println!("  aliases:  {}", info.aliases.join(", "));
-            }
-        }
-        None => {
-            eprintln!("Model '{name}' not found in registry.");
-            eprintln!("  Run `dscode model` to see available models.");
-        }
+    let resolution = registry.resolve(Some(name), Some(ProviderKind::Deepseek));
+
+    println!("Model: {}", resolution.resolved.id);
+    println!("  provider: {:?}", resolution.resolved.provider);
+    println!("  tools:    {}", resolution.resolved.supports_tools);
+    println!("  reasoning: {}", resolution.resolved.supports_reasoning);
+    if !resolution.resolved.aliases.is_empty() {
+        println!("  aliases:  {}", resolution.resolved.aliases.join(", "));
+    }
+    if resolution.used_fallback {
+        println!("  (fallback: {})", resolution.fallback_chain.join(" → "));
     }
 }

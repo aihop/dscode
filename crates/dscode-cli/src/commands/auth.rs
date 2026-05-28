@@ -1,22 +1,16 @@
-use anyhow::{Context, Result};
 use clap::Subcommand;
-use codewhale_config::{ConfigStore, ConfigToml, ProviderKind};
-use codewhale_secrets::Secrets;
+use codewhale_config::ConfigStore;
 use std::io::{self, Write};
 
 #[derive(Debug, Subcommand)]
 pub enum AuthCommands {
     /// Log in by setting your DeepSeek API key
-    #[command(alias = "add")]
     Login {
         /// API key (omit for interactive prompt)
         api_key: Option<String>,
     },
-
     /// Log out by removing the stored API key
-    #[command(alias = "remove", alias = "rm")]
     Logout,
-
     /// Show authentication status
     Status,
 }
@@ -26,6 +20,29 @@ pub async fn run(cmd: &AuthCommands) {
         AuthCommands::Login { api_key } => login(api_key.as_deref()),
         AuthCommands::Logout => logout(),
         AuthCommands::Status => status(),
+    }
+}
+
+fn config_path() -> std::path::PathBuf {
+    dirs::config_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("~/.config"))
+        .join("dscode")
+        .join("config.toml")
+}
+
+fn load_store() -> ConfigStore {
+    let path = config_path();
+    // ensure parent dir exists
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
+    ConfigStore::load(Some(path)).unwrap()
+}
+
+fn save_store(store: &ConfigStore) {
+    if let Err(e) = store.save() {
+        eprintln!("error: failed to save config: {e}");
+        std::process::exit(1);
     }
 }
 
@@ -46,104 +63,57 @@ fn login(api_key: Option<&str>) {
         std::process::exit(1);
     }
 
-    // Validate format: sk-xxxx
     if !key.starts_with("sk-") {
         eprintln!("warning: API key should start with 'sk-'");
     }
 
-    // Store in config file
-    let config_dir = dirs::config_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("~/.config"))
-        .join("dscode");
-
-    std::fs::create_dir_all(&config_dir).unwrap();
-
-    let config_path = config_dir.join("config.toml");
-    let mut store = ConfigStore::load_or_default(&config_path).unwrap_or_default();
+    let mut store = load_store();
     store.config.api_key = Some(key.clone());
-
-    if let Err(e) = store.save(&config_path) {
-        eprintln!("error: failed to save config: {e}");
-        std::process::exit(1);
-    }
-
-    // Also store in secrets store
-    let secrets_path = config_dir.join("secrets.json");
-    let secrets = Secrets::new(&secrets_path).unwrap_or_default();
-    if let Err(e) = secrets.set("deepseek", &key) {
-        eprintln!("warning: failed to store in secret store: {e}");
-    }
+    save_store(&store);
 
     println!("✓ API key saved");
-    println!("  config: {}", config_path.display());
+    println!("  config: {}", config_path().display());
     println!("  last 4 chars: ...{}", &key[key.len().saturating_sub(4)..]);
 }
 
 fn logout() {
-    let config_dir = dirs::config_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("~/.config"))
-        .join("dscode");
-    let config_path = config_dir.join("config.toml");
-
-    let mut store = ConfigStore::load_or_default(&config_path).unwrap_or_default();
+    let mut store = load_store();
     store.config.api_key = None;
-
-    if let Err(e) = store.save(&config_path) {
-        eprintln!("error: failed to save config: {e}");
-        std::process::exit(1);
-    }
-
-    // Also clear secrets
-    let secrets_path = config_dir.join("secrets.json");
-    let secrets = Secrets::new(&secrets_path).unwrap_or_default();
-    let _ = secrets.delete("deepseek");
+    save_store(&store);
 
     println!("✓ API key removed");
 }
 
 fn status() {
-    let config_dir = dirs::config_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("~/.config"))
-        .join("dscode");
-    let config_path = config_dir.join("config.toml");
+    let store = load_store();
 
-    let store = ConfigStore::load_or_default(&config_path).unwrap_or_default();
-
-    // Check config file
     let config_key = store.config.api_key.as_deref();
     let config_has = config_key.is_some_and(|k| !k.trim().is_empty());
 
-    // Check env
     let env_key = std::env::var("DEEPSEEK_API_KEY").ok();
     let env_has = env_key.as_deref().is_some_and(|k| !k.trim().is_empty());
 
-    // Check secrets store
-    let secrets_path = config_dir.join("secrets.json");
-    let secrets = Secrets::new(&secrets_path).unwrap_or_default();
-    let secret_key = secrets.get("deepseek").ok().flatten();
-    let secret_has = secret_key.as_deref().is_some_and(|k| !k.trim().is_empty());
-
-    let total = [config_has, env_has, secret_has].iter().filter(|&&v| v).count();
+    let active_source = match (config_has, env_has) {
+        (true, _) => "config",
+        (false, true) => "environment",
+        (false, false) => "none",
+    };
 
     println!("Authentication status");
     println!();
-
-    let active_source = if config_has {
-        "config"
-    } else if secret_has {
-        "secret store"
-    } else if env_has {
-        "environment"
-    } else {
-        "none"
-    };
-
-    print_source("config file", config_has, config_key.map(|k| &k[k.len().saturating_sub(4)..]));
-    print_source("secret store", secret_has, secret_key.as_deref().map(|k| &k[k.len().saturating_sub(4)..]));
-    print_source("environment (DEEPSEEK_API_KEY)", env_has, env_key.as_deref().map(|k| &k[k.len().saturating_sub(4)..]));
-
+    print_source(
+        "config file",
+        config_has,
+        config_key.map(|k| &k[k.len().saturating_sub(4)..]),
+    );
+    print_source(
+        "environment (DEEPSEEK_API_KEY)",
+        env_has,
+        env_key.as_deref().map(|k| &k[k.len().saturating_sub(4)..]),
+    );
     println!();
-    if total > 0 {
+
+    if config_has || env_has {
         println!("✓ Active source: {active_source}");
     } else {
         println!("✗ No API key found");

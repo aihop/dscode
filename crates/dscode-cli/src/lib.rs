@@ -1,6 +1,5 @@
 pub mod commands;
 
-use anyhow::Result;
 use clap::{Parser, Subcommand};
 
 /// dscode — mobile-first AI agent powered by DeepSeek

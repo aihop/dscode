@@ -49,26 +49,24 @@ pub async fn run(args: &RunArgs) {
     }
 }
 
+fn config_path() -> std::path::PathBuf {
+    dirs::config_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("~/.config"))
+        .join("dscode")
+        .join("config.toml")
+}
+
 fn resolve_api_key() -> Option<String> {
     if let Ok(key) = std::env::var("DEEPSEEK_API_KEY") {
         if !key.trim().is_empty() {
             return Some(key);
         }
     }
-    let config_dir = dirs::config_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("~/.config"))
-        .join("dscode");
-    let config_path = config_dir.join("config.toml");
-    if let Ok(store) = codewhale_config::ConfigStore::load_or_default(&config_path) {
-        if let Some(key) = store.config.api_key {
-            if !key.trim().is_empty() {
-                return Some(key);
-            }
-        }
+    if let Some(parent) = config_path().parent() {
+        std::fs::create_dir_all(parent).ok();
     }
-    let secrets_path = config_dir.join("secrets.json");
-    if let Ok(secrets) = codewhale_secrets::Secrets::new(&secrets_path) {
-        if let Ok(Some(key)) = secrets.get("deepseek") {
+    if let Ok(store) = codewhale_config::ConfigStore::load(Some(config_path())) {
+        if let Some(key) = store.config.api_key {
             if !key.trim().is_empty() {
                 return Some(key);
             }
@@ -78,11 +76,10 @@ fn resolve_api_key() -> Option<String> {
 }
 
 fn resolve_base_url() -> String {
-    let config_dir = dirs::config_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("~/.config"))
-        .join("dscode");
-    let config_path = config_dir.join("config.toml");
-    if let Ok(store) = codewhale_config::ConfigStore::load_or_default(&config_path) {
+    if let Some(parent) = config_path().parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
+    if let Ok(store) = codewhale_config::ConfigStore::load(Some(config_path())) {
         if let Some(url) = store.config.providers.deepseek.base_url {
             return url;
         }

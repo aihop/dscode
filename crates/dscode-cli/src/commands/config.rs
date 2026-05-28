@@ -1,27 +1,16 @@
-use clap::{Args, Subcommand};
-use codewhale_config::{ConfigStore, ConfigToml};
+use clap::Subcommand;
+use codewhale_config::ConfigStore;
 
 #[derive(Debug, Subcommand)]
 pub enum ConfigCommands {
     /// Initialize default configuration
     Init,
-
     /// Show current configuration
     Show,
-
-    /// Set a configuration key (e.g. model, api_key)
-    Set {
-        /// Configuration key name
-        key: String,
-        /// Configuration value
-        value: String,
-    },
-
+    /// Set a configuration key (model, base_url, api_key)
+    Set { key: String, value: String },
     /// Get a configuration value
-    Get {
-        /// Configuration key name
-        key: String,
-    },
+    Get { key: String },
 }
 
 pub async fn run(cmd: &ConfigCommands) {
@@ -33,14 +22,26 @@ pub async fn run(cmd: &ConfigCommands) {
     }
 }
 
-fn config_dir() -> std::path::PathBuf {
+fn config_path() -> std::path::PathBuf {
     dirs::config_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("~/.config"))
         .join("dscode")
+        .join("config.toml")
 }
 
-fn config_path() -> std::path::PathBuf {
-    config_dir().join("config.toml")
+fn load_store() -> ConfigStore {
+    let path = config_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
+    ConfigStore::load(Some(path)).unwrap()
+}
+
+fn save_store(store: &ConfigStore) {
+    if let Err(e) = store.save() {
+        eprintln!("error: failed to save config: {e}");
+        std::process::exit(1);
+    }
 }
 
 fn init() {
@@ -49,51 +50,34 @@ fn init() {
         println!("Config already exists at: {}", path.display());
         return;
     }
-
-    std::fs::create_dir_all(config_dir()).unwrap();
-
-    let config = ConfigToml::default();
-    let toml_str = toml::to_string_pretty(&config).unwrap();
-    std::fs::write(&path, &toml_str).unwrap();
-
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).unwrap();
+    }
+    let store = load_store();
+    save_store(&store);
     println!("✓ Config initialized at: {}", path.display());
 }
 
 fn show() {
-    let path = config_path();
-    let store = ConfigStore::load_or_default(&path).unwrap_or_default();
+    let store = load_store();
+    let cfg = &store.config;
 
-    println!("Configuration ({})", path.display());
+    println!("Configuration");
+    println!("  path:     {}", config_path().display());
+    println!("  api_key:  {}", mask_key(cfg.api_key.as_deref()));
     println!();
-
-    // Print non-sensitive config
-    println!("  provider: {:?}", store.config.provider);
-    println!("  model:     {}", store.config.providers.deepseek.model.as_deref().unwrap_or("(default)"));
-    println!("  base_url:  {}", store.config.providers.deepseek.base_url.as_deref().unwrap_or("https://api.deepseek.com/beta"));
-
-    let has_key = store.config.api_key.as_deref().is_some_and(|k| !k.trim().is_empty());
-    if has_key {
-        let key = store.config.api_key.as_deref().unwrap();
-        println!("  api_key:   ...{} (set)", &key[key.len().saturating_sub(4)..]);
-    } else {
-        println!("  api_key:   (not set)");
-    }
+    println!("DeepSeek provider:");
+    println!("  model:    {}", cfg.providers.deepseek.model.as_deref().unwrap_or("deepseek-v4-pro"));
+    println!("  base_url: {}", cfg.providers.deepseek.base_url.as_deref().unwrap_or("https://api.deepseek.com/beta"));
 }
 
 fn set(key: &str, value: &str) {
-    let path = config_path();
-    let mut store = ConfigStore::load_or_default(&path).unwrap_or_default();
+    let mut store = load_store();
 
     match key {
-        "model" => {
-            store.config.providers.deepseek.model = Some(value.to_string());
-        }
-        "base_url" | "base-url" => {
-            store.config.providers.deepseek.base_url = Some(value.to_string());
-        }
-        "api_key" | "api-key" | "key" => {
-            store.config.api_key = Some(value.to_string());
-        }
+        "model" => store.config.providers.deepseek.model = Some(value.to_string()),
+        "base_url" | "base-url" => store.config.providers.deepseek.base_url = Some(value.to_string()),
+        "api_key" | "api-key" | "key" => store.config.api_key = Some(value.to_string()),
         _ => {
             eprintln!("error: unknown config key '{key}'");
             eprintln!("  known keys: model, base_url, api_key");
@@ -101,30 +85,17 @@ fn set(key: &str, value: &str) {
         }
     }
 
-    if let Err(e) = store.save(&path) {
-        eprintln!("error: failed to save config: {e}");
-        std::process::exit(1);
-    }
-
+    save_store(&store);
     println!("✓ {key} set");
 }
 
 fn get(key: &str) {
-    let path = config_path();
-    let store = ConfigStore::load_or_default(&path).unwrap_or_default();
+    let store = load_store();
 
     let value = match key {
         "model" => store.config.providers.deepseek.model.clone(),
         "base_url" | "base-url" => store.config.providers.deepseek.base_url.clone(),
-        "api_key" | "api-key" | "key" => {
-            store.config.api_key.as_deref().map(|k| {
-                if k.len() > 8 {
-                    format!("...{}", &k[k.len().saturating_sub(4)..])
-                } else {
-                    "(set)".to_string()
-                }
-            })
-        }
+        "api_key" | "api-key" | "key" => store.config.api_key.as_deref().map(|k| mask_key(Some(k))),
         _ => {
             eprintln!("error: unknown config key '{key}'");
             std::process::exit(1);
@@ -134,5 +105,13 @@ fn get(key: &str) {
     match value {
         Some(v) => println!("{v}"),
         None => println!("(not set)"),
+    }
+}
+
+fn mask_key(key: Option<&str>) -> String {
+    match key {
+        Some(k) if k.len() > 8 => format!("...{} (set)", &k[k.len().saturating_sub(4)..]),
+        Some(_) => "(set)".to_string(),
+        None => "(not set)".to_string(),
     }
 }
