@@ -57,12 +57,18 @@ pub async fn run(args: &RunArgs) {
 
     if stream {
         match api::call_stream(&client, &base_url, &api_key, &model, &messages, narrow, tw).await {
-            Ok((_reply, _usage)) => {}
+            Ok((_reply, usage)) => {
+                if narrow { eprintln!("─ {:.0} tok", usage.tokens_out); }
+            }
             Err(e) => { eprintln!("error: {e}"); std::process::exit(1); }
         }
     } else {
         match api::call_nonstream(&client, &base_url, &api_key, &model, &messages).await {
-            Ok((_reply, _usage)) => {}
+            Ok((_reply, usage)) => {
+                if usage.tokens_out > 0 {
+                    eprintln!("─ {:.0} tok (reasoning: {:.0})", usage.tokens_out, usage.reasoning_tokens);
+                }
+            }
             Err(e) => { eprintln!("error: {e}"); std::process::exit(1); }
         }
     }
