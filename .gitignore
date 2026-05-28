@@ -16,3 +16,6 @@ Cargo.lock
 
 # dscode local config (user-specific)
 .dscode/
+
+# Build output
+/dist/

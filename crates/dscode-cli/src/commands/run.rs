@@ -10,6 +10,20 @@ pub struct RunArgs {
     pub model: Option<String>,
 }
 
+fn resolve_model(input: &str) -> String {
+    match input {
+        "v4-pro" | "v4pro"           => "deepseek-v4-pro",
+        "v4-flash" | "v4flash" | "flash" => "deepseek-v4-flash",
+        "v3"                          => "deepseek-v3",
+        "v3.2" | "v32"               => "deepseek-v3.2",
+        "r1"                          => "deepseek-r1",
+        "chat"                        => "deepseek-chat",
+        "reasoner"                    => "deepseek-reasoner",
+        "coder"                       => "deepseek-coder",
+        other                         => other,
+    }.to_string()
+}
+
 pub async fn run(args: &RunArgs) {
     let prompt = args.prompt.join(" ");
     if prompt.is_empty() {
@@ -18,10 +32,9 @@ pub async fn run(args: &RunArgs) {
         std::process::exit(1);
     }
 
-    let model = args
-        .model
-        .clone()
-        .unwrap_or_else(|| "deepseek-v4-flash".to_string());
+    let model = resolve_model(
+        &args.model.clone().unwrap_or_else(|| "deepseek-v4-flash".to_string())
+    );
 
     // Resolve API key
     let api_key = resolve_api_key();
