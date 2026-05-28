@@ -1,1 +1,141 @@
-ai first code
+# dscode
+
+> Mobile-first AI agent, powered by DeepSeek.
+
+**dscode** is a terminal-native AI coding agent built on [CodeWhale](https://github.com/Hmbown/CodeWhale).  
+It connects directly to DeepSeek's API and works entirely through the command line —  
+perfect for **SSH from your phone** or **Termux on Android**.
+
+```bash
+# One-line install
+curl -fsSL https://dscode.org/install.sh | sh
+
+# Set your key and start chatting
+dscode auth login
+dscode chat
+```
+
+---
+
+## Features
+
+- **Pure CLI** — no web UI, no TUI, no bloat. Just stdin/stdout.
+- **Streaming responses** — see output token by token.
+- **Mobile-optimized** — auto-detects narrow terminals (≤80 columns).
+- **Session management** — save, resume, export conversations.
+- **DeepSeek-only** — zero configuration for other providers.
+- **Single binary** — ~7.5MB, statically linked, ARM-ready.
+
+## Quickstart
+
+### 1. Install
+
+```bash
+curl -fsSL https://dscode.org/install.sh | sh
+```
+
+Or via cargo:
+
+```bash
+cargo install dscode
+```
+
+Or build from source:
+
+```bash
+git clone --recursive https://github.com/Hmbown/dscode.git
+cd dscode
+cargo build --release -p dscode
+cp target/release/dscode ~/.local/bin/
+```
+
+### 2. Authenticate
+
+```bash
+dscode auth login
+# Enter your DeepSeek API key: sk-...
+```
+
+Or set the environment variable:
+
+```bash
+export DEEPSEEK_API_KEY=sk-your-key-here
+```
+
+### 3. Chat
+
+```bash
+# Interactive mode (default)
+dscode chat
+
+# Single prompt
+dscode run "write a fibonacci function in rust"
+
+# Use Flash model for faster responses
+dscode chat -m deepseek-v4-flash
+```
+
+## Commands
+
+| Command | Description |
+|---------|-------------|
+| `dscode chat` | Interactive chat with DeepSeek |
+| `dscode run <prompt>` | Single prompt, print response |
+| `dscode auth login` | Set API key |
+| `dscode auth status` | Check authentication |
+| `dscode auth logout` | Remove API key |
+| `dscode config show` | View configuration |
+| `dscode config set <key> <val>` | Set config (model, base_url) |
+| `dscode session list` | List saved sessions |
+| `dscode session show <id>` | View session details |
+| `dscode model` | List available models |
+
+## Mobile Usage
+
+### On Android (Termux)
+
+```bash
+pkg install curl
+curl -fsSL https://dscode.org/install.sh | sh
+dscode auth login
+dscode chat
+```
+
+### Via SSH
+
+```bash
+ssh user@your-server
+dscode chat
+```
+
+The CLI auto-detects terminal width and adapts output —  
+no horizontal scrolling on narrow phone screens.
+
+## Configuration
+
+Config lives at `~/.config/dscode/config.toml`:
+
+```toml
+api_key = "sk-..."
+
+[providers.deepseek]
+model = "deepseek-v4-pro"
+base_url = "https://api.deepseek.com/beta"
+```
+
+## Architecture
+
+```
+dscode CLI ──► DeepSeek API ──► dscode-v4-pro / dscode-v4-flash
+     │
+     ├── CodeWhale engine (agent + tools + policy)
+     ├── SQLite session store
+     └── Narrow-terminal renderer
+```
+
+Built on [CodeWhale](https://github.com/Hmbown/CodeWhale) —  
+DeepSeek + MiMo coding agent in terminal (35k+ stars).
+
+## License
+
+MIT
