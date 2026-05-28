@@ -89,11 +89,36 @@ pub async fn run(args: &ChatArgs) {
             Err(e) => { eprintln!("\nerror: {e}"); break; }
         }
 
-        let input = input.trim().to_string();
+        let mut input = input.trim_end().to_string();
         if input.is_empty() { continue; }
 
-        // Built-in commands
-        match input.as_str() {
+        // Multi-line input: line ends with \  or starts with ```
+        if input.ends_with('\\') {
+            input.pop(); // remove trailing backslash
+            loop {
+                let sub = read_line_raw();
+                let sub = sub.trim_end().to_string();
+                if sub.is_empty() { break; }
+                let should_continue = sub.ends_with('\\');
+                let sub = if should_continue { sub[..sub.len()-1].to_string() } else { sub };
+                input.push('\n');
+                input.push_str(&sub);
+                if !should_continue { break; }
+            }
+        } else if input.starts_with("```") {
+            let fence = input.clone();
+            loop {
+                let sub = read_line_raw();
+                let sub = sub.trim_end().to_string();
+                input.push('\n');
+                input.push_str(&sub);
+                if sub == fence || sub.trim() == "```" { break; }
+            }
+        }
+
+        // Built-in commands (match on trimmed single-line)
+        let cmd = input.trim();
+        match cmd {
             "/exit" | "/quit" => break,
             "/clear" => {
                 messages.clear();
@@ -214,3 +239,10 @@ fn terminal_width() -> u16 {
 }
 
 fn is_narrow_terminal() -> bool { terminal_width() <= 80 }
+
+/// Read one line from stdin without trimming
+fn read_line_raw() -> String {
+    let mut buf = String::new();
+    io::stdin().read_line(&mut buf).ok();
+    buf
+}
