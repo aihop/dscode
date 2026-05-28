@@ -32,11 +32,20 @@ fn config_path() -> std::path::PathBuf {
 
 fn load_store() -> ConfigStore {
     let path = config_path();
-    // ensure parent dir exists
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).ok();
     }
-    ConfigStore::load(Some(path)).unwrap()
+    match ConfigStore::load(Some(path.clone())) {
+        Ok(s) => s,
+        Err(_) => {
+            // Corrupt file: back it up and start fresh
+            if path.exists() {
+                let backup = path.with_extension("toml.bak");
+                let _ = std::fs::rename(&path, &backup);
+            }
+            ConfigStore::load(Some(path)).expect("fresh config should load")
+        }
+    }
 }
 
 fn save_store(store: &ConfigStore) {
