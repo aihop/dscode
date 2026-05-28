@@ -24,6 +24,13 @@ repository = "https://github.com/Hmbown/dscode"
 # CodeWhale workspace dependencies — kept in sync so path-deps resolve
 # workspace = true inheritance. Do not remove entries that seem unused
 # by dscode itself; CodeWhale sub-crates need them at build time.
+[profile.release]
+opt-level = "z"     # optimize for size
+lto = true          # link-time optimization
+codegen-units = 1   # slower compile, smaller binary
+strip = true        # remove debug symbols
+panic = "abort"     # smaller binary (no unwind tables)
+
 [workspace.dependencies]
 anyhow = "1.0.100"
 async-trait = "0.1.89"
