@@ -70,9 +70,11 @@ pub async fn run(args: &ChatArgs) {
 
     let narrow = is_narrow_terminal();
     let tw = terminal_width();
+    let max_rounds: usize = 20; // trim oldest when exceeded
 
+    let initial_msgs = messages.len();
     if !narrow {
-        println!("dscode · {model}  (Ctrl+C /help)");
+        println!("dscode · {model}  (Ctrl+C /help) [{} msgs]", initial_msgs);
         println!("{}", "─".repeat(std::cmp::min(usize::from(tw.saturating_sub(1)), 50)));
     }
 
@@ -140,6 +142,15 @@ pub async fn run(args: &ChatArgs) {
 
         let ts = Utc::now().timestamp();
         messages.push(Message { role: "user".into(), content: input, created_at: ts });
+
+        // Context window: keep last N rounds
+        if messages.len() > max_rounds * 2 {
+            let trimmed = messages.len() - max_rounds * 2;
+            messages.drain(0..trimmed);
+            if narrow {
+                eprintln!("─ trimmed {trimmed} old msgs to save context");
+            }
+        }
 
         let api_msgs: Vec<serde_json::Value> = messages.iter().map(|m| {
             serde_json::json!({"role": m.role, "content": m.content})
