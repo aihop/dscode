@@ -1,3 +1,4 @@
+pub mod api;
 pub mod commands;
 
 use clap::{Parser, Subcommand};
