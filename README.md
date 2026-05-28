@@ -34,7 +34,7 @@ dscode chat
 curl -fsSL https://dscode.org/install.sh | sh
 ```
 
-Or via cargo:
+Or via `cargo install` (once published to crates.io):
 
 ```bash
 cargo install dscode
@@ -81,14 +81,15 @@ dscode chat -m deepseek-v4-flash
 |---------|-------------|
 | `dscode chat` | Interactive chat with DeepSeek |
 | `dscode run <prompt>` | Single prompt, print response |
-| `dscode auth login` | Set API key |
-| `dscode auth status` | Check authentication |
-| `dscode auth logout` | Remove API key |
+| `dscode auth login` | Set API key (hidden input) |
+| `dscode auth test` | Verify API key is valid |
+| `dscode auth status` | Check authentication status |
+| `dscode config init` | Interactive setup wizard |
 | `dscode config show` | View configuration |
-| `dscode config set <key> <val>` | Set config (model, base_url) |
 | `dscode session list` | List saved sessions |
-| `dscode session show <id>` | View session details |
+| `dscode session rename <id> <name>` | Rename a session |
 | `dscode model` | List available models |
+| `dscode completion bash` | Generate shell completions |
 
 ## Mobile Usage
 
