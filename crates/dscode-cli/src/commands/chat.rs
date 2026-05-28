@@ -163,8 +163,7 @@ pub async fn run(args: &ChatArgs) {
                 if narrow {
                     eprintln!("─ {:.1}s {:.0} tok", usage.tokens_out as f64 / 30.0, usage.tokens_out);
                 }
-                // Auto-save every 4 rounds
-                if messages.len() % 8 == 0 { save_session(&model, &messages); }
+                save_session(&model, &messages);
             }
             Err(e) => {
                 eprintln!("\nerror: {e}");
