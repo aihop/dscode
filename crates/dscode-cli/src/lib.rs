@@ -9,7 +9,7 @@ use clap::{Parser, Subcommand};
     name = "dscode",
     version = env!("CARGO_PKG_VERSION"),
     about = "Mobile-first AI agent powered by DeepSeek",
-    long_about = "dscode is a mobile-first AI coding agent built on CodeWhale.\n\
+    long_about = "dscode is a mobile-first AI coding agent built on the dscode engine.\n\
                    It connects directly to DeepSeek's API and works entirely\n\
                    through the terminal — perfect for SSH or Termux on your phone.",
     override_usage = "dscode [COMMAND]\n       dscode chat [OPTIONS]\n       dscode run [OPTIONS] <PROMPT>"

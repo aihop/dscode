@@ -1,6 +1,6 @@
 /// Shared DeepSeek API client layer.
 ///
-/// Thin connector — CodeWhale engine doesn't expose a simple
+/// Thin connector — dscode engine doesn't expose a simple
 /// "send → stream" API, so this bridges the gap.
 
 use std::collections::BTreeMap;

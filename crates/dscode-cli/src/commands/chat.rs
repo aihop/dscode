@@ -1,6 +1,6 @@
 /// Mobile-first interactive chat with DeepSeek.
 ///
-/// Thin UX layer on top of CodeWhale engine + shared api.rs.
+/// Thin UX layer on top of dscode engine + shared api.rs.
 /// Session persistence via JSON, narrow-terminal aware.
 
 use crate::api::{self, resolve_model_name, resolve_api_key, resolve_base_url};

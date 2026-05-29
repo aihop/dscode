@@ -2,7 +2,7 @@
 
 > Mobile-first AI agent, powered by DeepSeek.
 
-**dscode** is a terminal-native AI coding agent built on [CodeWhale](https://github.com/aihop/CodeWhale).  
+**dscode** is a terminal-native AI coding agent built on the dscode engine.  
 It connects directly to DeepSeek's API and works entirely through the command line —  
 perfect for **SSH from your phone** or **Termux on Android**.
 
@@ -129,13 +129,13 @@ base_url = "https://api.deepseek.com/beta"
 ```
 dscode CLI ──► DeepSeek API ──► dscode-v4-pro / dscode-v4-flash
      │
-     ├── CodeWhale engine (agent + tools + policy)
+     ├── dscode engine (agent + tools + policy)
      ├── SQLite session store
      └── Narrow-terminal renderer
 ```
 
-Built on [CodeWhale](https://github.com/aihop/CodeWhale) —  
-DeepSeek + MiMo coding agent in terminal (35k+ stars).
+Built on the dscode engine —  
+DeepSeek AI coding agent for the terminal.
 
 ## License
 

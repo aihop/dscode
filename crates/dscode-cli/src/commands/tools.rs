@@ -15,7 +15,7 @@ pub async fn run(cmd: &ToolCommands) {
 fn list() {
     println!("Tools (coming in Phase 2)");
     println!();
-    println!("  CodeWhale's tool system will be wired in the next phase.");
+    println!("  dscode's tool system will be wired in the next phase.");
     println!("  Planned tools:");
     println!("    - file_read      Read file contents");
     println!("    - file_write     Write to files");
