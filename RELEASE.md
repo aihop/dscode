@@ -3,7 +3,7 @@
 ## 1. Push to GitHub
 
 ```bash
-git remote add origin git@github.com:Hmbown/dscode.git
+git remote add origin git@github.com:aihop/dscode.git
 git push origin main
 git push origin --tags
 ```
@@ -17,7 +17,7 @@ Push tags triggers the CI workflow (`.github/workflows/ci.yml`):
 To trigger: `git tag v0.1.0 && git push origin v0.1.0`
 
 Or manually:
-1. Go to https://github.com/Hmbown/dscode/releases
+1. Go to https://github.com/aihop/dscode/releases
 2. Click "Draft a new release"
 3. Tag: `v0.1.0`, Title: `dscode v0.1.0`
 4. Upload binaries from `target/release/dscode`
@@ -46,7 +46,7 @@ curl -fsSL https://dscode.org/install.sh | sh
 cargo install dscode
 
 # Or build from source
-git clone --recursive https://github.com/Hmbown/dscode.git
+git clone --recursive https://github.com/aihop/dscode.git
 cd dscode && cargo build --release -p dscode
 ```
 

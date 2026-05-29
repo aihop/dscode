@@ -4,7 +4,7 @@
 
 set -eu
 
-REPO="Hmbown/dscode"
+REPO="aihop/dscode"
 BIN_NAME="dscode"
 INSTALL_DIR="${DSCODE_INSTALL_DIR:-$HOME/.local/bin}"
 

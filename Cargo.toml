@@ -9,7 +9,7 @@ version = "0.1.0"
 edition = "2021"
 rust-version = "1.75"
 license = "MIT"
-repository = "https://github.com/Hmbown/dscode"
+repository = "https://github.com/aihop/dscode"
 
 [profile.release]
 opt-level = "z"
