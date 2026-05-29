@@ -2,7 +2,7 @@
 
 > Mobile-first AI agent, powered by DeepSeek.
 
-**dscode** is a terminal-native AI coding agent built on the dscode engine.  
+**dscode** is a terminal-native AI coding agent.  
 It connects directly to DeepSeek's API and works entirely through the command line —  
 perfect for **SSH from your phone** or **Termux on Android**.
 
@@ -20,11 +20,13 @@ dscode chat
 ## Features
 
 - **Pure CLI** — no web UI, no TUI, no bloat. Just stdin/stdout.
-- **Streaming responses** — see output token by token.
-- **Mobile-optimized** — auto-detects narrow terminals (≤80 columns).
-- **Session management** — save, resume, export conversations.
-- **DeepSeek-only** — zero configuration for other providers.
-- **Single binary** — ~7.5MB, statically linked, ARM-ready.
+- **Agent with tools** — autonomous multi-turn execution: read/write/edit files, run shell commands, search code, fetch URLs.
+- **Streaming Markdown** — see output token by token with full Markdown → ANSI rendering (headings, bold, code blocks, lists, syntax highlighting).
+- **Mobile-optimized** — auto-detects narrow terminals (≤80 columns), word-wrap, minimal output.
+- **Session persistence** — SQLite-backed, save/resume/list/export conversations.
+- **Model fallback** — auto-retry with `deepseek-v4-flash` when `deepseek-v4-pro` fails.
+- **Command safety** — policy engine blocks destructive commands (`rm -rf /`, `dd`, `mkfs`, etc.).
+- **Single binary** — ~3.4MB, statically linked, ARM-ready.
 
 ## Quickstart
 
@@ -32,12 +34,6 @@ dscode chat
 
 ```bash
 curl -fsSL https://dscode.org/install.sh | sh
-```
-
-Or via `cargo install` (once published to crates.io):
-
-```bash
-cargo install dscode
 ```
 
 Or build from source:
@@ -65,7 +61,7 @@ export DEEPSEEK_API_KEY=sk-your-key-here
 ### 3. Chat
 
 ```bash
-# Interactive mode (default)
+# Interactive mode (default) — agent with tools
 dscode chat
 
 # Single prompt
@@ -73,23 +69,73 @@ dscode run "write a fibonacci function in rust"
 
 # Use Flash model for faster responses
 dscode chat -m deepseek-v4-flash
+
+# Plain chat mode (no tools)
+dscode chat --plain
 ```
 
 ## Commands
 
 | Command | Description |
 |---------|-------------|
-| `dscode chat` | Interactive chat with DeepSeek |
+| `dscode chat` | Interactive chat with DeepSeek (agent mode) |
+| `dscode chat --plain` | Interactive chat without tools |
+| `dscode chat -s <id>` | Resume a specific session |
 | `dscode run <prompt>` | Single prompt, print response |
 | `dscode auth login` | Set API key (hidden input) |
 | `dscode auth test` | Verify API key is valid |
 | `dscode auth status` | Check authentication status |
 | `dscode config init` | Interactive setup wizard |
-| `dscode config show` | View configuration |
+| `dscode config show` | View current configuration |
 | `dscode session list` | List saved sessions |
+| `dscode session show <id>` | Show session details |
 | `dscode session rename <id> <name>` | Rename a session |
+| `dscode session delete <id>` | Delete a session |
+| `dscode session export <id>` | Export session as JSON |
+| `dscode tools list` | List available agent tools |
 | `dscode model` | List available models |
 | `dscode completion bash` | Generate shell completions |
+
+## Session Management
+
+Sessions are automatically saved to `~/.local/share/dscode/state.db` (SQLite).
+
+```bash
+# List all sessions (most recent first)
+dscode session list
+
+# Show session details and messages
+dscode session show abc12345
+
+# Resume a session
+dscode chat -s abc12345
+
+# Rename for easy identification
+dscode session rename abc12345 "my-fix-branch"
+
+# Export as JSON
+dscode session export abc12345 > backup.json
+
+# Delete
+dscode session delete abc12345
+```
+
+## Agent Tools
+
+dscode includes 8 built-in tools for autonomous code work:
+
+```
+read_file     Read file contents
+write_file    Create or overwrite files
+edit_file     Surgical text replacement in files
+run_shell     Execute shell commands (blocked: destructive)
+search_code   Grep for regex patterns in the project
+list_files    List directory contents
+web_search    Search the web via DuckDuckGo
+fetch_url     HTTP GET a URL
+```
+
+List them anytime: `dscode tools list`
 
 ## Mobile Usage
 
@@ -127,15 +173,30 @@ base_url = "https://api.deepseek.com/beta"
 ## Architecture
 
 ```
-dscode CLI ──► DeepSeek API ──► dscode-v4-pro / dscode-v4-flash
-     │
-     ├── dscode engine (agent + tools + policy)
-     ├── SQLite session store
-     └── Narrow-terminal renderer
+┌──────────────────────────────────────────────────┐
+│                   dscode CLI                      │
+│                                                   │
+│  chat.rs ──agent loop──► api.rs ──SSE──► DeepSeek│
+│    │  ▲                      │                   │
+│    │  │                      ▼                   │
+│    │  │                 tools.rs                 │
+│    │  │            (8 tools via ToolRegistry)     │
+│    │  │                   │                      │
+│    ▼  │                   ▼                      │
+│  session.rs ◄── state.db ──► codewhale-state     │
+│    (SQLite)                 (SQLite)              │
+│                                                   │
+│  ┌─ Codewhale engine ────────────────────────┐   │
+│  │  codewhale-tools     Tool framework       │   │
+│  │  codewhale-config    Config management    │   │
+│  │  codewhale-state     SQLite persistence   │   │
+│  │  codewhale-execpolicy Shell safety        │   │
+│  │  codewhale-protocol  Protocol types       │   │
+│  └───────────────────────────────────────────┘   │
+└──────────────────────────────────────────────────┘
 ```
 
-Built on the dscode engine —  
-DeepSeek AI coding agent for the terminal.
+dscode is built on the **codewhale engine** — reusing its tool framework, config system, SQLite store, and command safety policy — while keeping a lightweight, mobile-first CLI surface.
 
 ## License
 
