@@ -99,11 +99,17 @@ pub async fn run(args: &ChatArgs) {
         let _ = rl.load_history(&hist_path);
     }
 
+    // Detect git branch for prompt
+    let git_branch = get_git_branch();
+
     loop {
-        let prompt = if narrow { "> " } else { "> " };
+        let branch_tag = if let Some(ref b) = git_branch {
+            if narrow { format!("\x1B[35m{b}\x1B[0m ") } else { format!("\x1B[35m{b}\x1B[0m ") }
+        } else { String::new() };
+        let prompt = format!("{branch_tag}> ");
 
         let input = if let Some(ref mut rl) = rl {
-            match rl.readline(prompt) {
+            match rl.readline(&prompt) {
                 Ok(line) => {
                     let _ = rl.add_history_entry(&line);
                     let _ = rl.save_history(&hist_path);
@@ -347,6 +353,19 @@ fn terminal_width() -> u16 {
         }
     }
     80
+}
+
+/// Detect current git branch name for prompt display
+fn get_git_branch() -> Option<String> {
+    let out = std::process::Command::new("git")
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output().ok()?;
+    if out.status.success() {
+        let branch = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if !branch.is_empty() && branch != "HEAD" { Some(branch) } else { None }
+    } else { None }
 }
 
 fn config_dir() -> PathBuf {

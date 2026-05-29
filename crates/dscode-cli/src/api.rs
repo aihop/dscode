@@ -654,14 +654,23 @@ pub fn md_to_ansi(text: &str) -> String {
     let mut in_code_block = false;
     let mut code_buf = String::new();
 
+    let mut code_lang = String::new();
+
     for line in text.lines() {
         if line.trim_start().starts_with("```") {
             if in_code_block {
-                // End code block
-                out.push_str(&format!("\x1B[90m─── code ───\x1B[0m\n{}\n\x1B[90m────────────\x1B[0m\n", code_buf));
+                // End code block — render with syntax highlight
+                let lang_label = if code_lang.is_empty() { "code".to_string() } else { code_lang.clone() };
+                out.push_str(&format!("\x1B[90m─── {} ───\x1B[0m\n", lang_label));
+                out.push_str(&highlight_code(&code_buf, &code_lang));
+                out.push_str(&format!("\x1B[90m{}\x1B[0m\n", "─".repeat(16)));
                 code_buf.clear();
+                code_lang.clear();
                 in_code_block = false;
             } else {
+                // Opening fence — capture language
+                let rest = line.trim_start().trim_start_matches("```").trim();
+                code_lang = rest.to_string();
                 in_code_block = true;
             }
             continue;
@@ -751,6 +760,101 @@ fn replace_inline_code(text: &str) -> String {
     result.push_str(rest);
     if !toggle { result.push_str("\x1B[0m"); }
     result
+}
+
+/// Language-specific keyword lists for syntax highlighting
+fn lang_keywords(lang: &str) -> &'static [&'static str] {
+    match lang {
+        "rust" | "rs" => &[
+            "fn", "let", "mut", "pub", "use", "mod", "struct", "enum", "impl", "trait",
+            "async", "await", "match", "if", "else", "for", "while", "loop", "return",
+            "true", "false", "Some", "None", "Ok", "Err", "self", "Super", "crate",
+            "where", "type", "const", "static", "unsafe", "ref", "move", "as", "in",
+            "dyn", "impl", "pub", "super", "self", "String", "Vec", "Box", "Result",
+        ],
+        "python" | "py" => &[
+            "def", "class", "return", "if", "elif", "else", "for", "while", "import",
+            "from", "as", "try", "except", "finally", "with", "yield", "lambda",
+            "True", "False", "None", "self", "async", "await", "in", "not", "and", "or",
+            "print", "len", "range", "int", "str", "list", "dict", "set", "tuple",
+        ],
+        "javascript" | "js" | "typescript" | "ts" => &[
+            "function", "const", "let", "var", "return", "if", "else", "for", "while",
+            "class", "import", "export", "from", "async", "await", "try", "catch",
+            "true", "false", "null", "undefined", "new", "this", "typeof",
+            "console", "log", "require", "module",
+        ],
+        "go" | "golang" => &[
+            "func", "return", "if", "else", "for", "range", "var", "const", "type",
+            "struct", "interface", "map", "chan", "go", "defer", "select", "case",
+            "switch", "package", "import", "nil", "true", "false", "make", "len",
+            "error", "string", "int", "bool", "byte", "rune",
+        ],
+        "json" => &["true", "false", "null"],
+        _ => &[],
+    }
+}
+
+/// Simple syntax highlighter for code blocks.
+/// Colors: keywords=blue, strings=green, comments=gray, numbers=yellow
+fn highlight_code(code: &str, lang: &str) -> String {
+    let keywords = lang_keywords(lang);
+    let mut out = String::new();
+
+    for line in code.lines() {
+        let trimmed = line.trim();
+        // Comment line
+        let comment_prefixes = ["//", "#", "--", "//"];
+        if comment_prefixes.iter().any(|p| trimmed.starts_with(p)) {
+            out.push_str(&format!("\x1B[90m{}\x1B[0m\n", line));
+            continue;
+        }
+
+        // Tokenize and color
+        let mut result = String::new();
+        let mut rest = line;
+        while !rest.is_empty() {
+            // String literals (double and single quoted)
+            if let Some(pos) = rest.find(|c| c == '"' || c == '\'') {
+                result.push_str(&rest[..pos]);
+                let quote = rest[pos..].chars().next().unwrap();
+                result.push_str(&rest[pos..pos+1]); // opening quote
+                let inner_start = pos + 1;
+                if let Some(end) = rest[inner_start..].find(quote) {
+                    let inner = &rest[inner_start..inner_start + end];
+                    result.push_str(&format!("\x1B[32m{}\x1B[0m{}", inner, quote));
+                    rest = &rest[inner_start + end + 1..];
+                } else {
+                    // Unclosed string
+                    result.push_str(&format!("\x1B[32m{}\x1B[0m", &rest[inner_start..]));
+                    rest = "";
+                }
+                continue;
+            }
+
+            // Split by word boundaries
+            let word_end = rest.find(|c: char| !c.is_alphanumeric() && c != '_').unwrap_or(rest.len());
+            let word = &rest[..word_end];
+            let after = if word_end < rest.len() { &rest[word_end..word_end+1] } else { "" };
+
+            // Keyword highlighting
+            if !word.is_empty() && keywords.contains(&word) {
+                result.push_str(&format!("\x1B[34m{word}\x1B[0m"));
+            } else {
+                // Number highlighting
+                if word.chars().all(|c| c.is_ascii_digit() || c == '.') && !word.is_empty() {
+                    result.push_str(&format!("\x1B[33m{word}\x1B[0m"));
+                } else {
+                    result.push_str(word);
+                }
+            }
+            result.push_str(after);
+            rest = &rest[word_end + after.len()..];
+        }
+        out.push_str(&result);
+        out.push('\n');
+    }
+    out
 }
 
 /// Helper: run a command and return stdout+stderr as string
