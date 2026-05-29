@@ -6,6 +6,7 @@
 use crate::api::{self, resolve_model_name, resolve_api_key, resolve_base_url};
 use chrono::Utc;
 use clap::Args;
+use rustyline::DefaultEditor;
 use serde::{Deserialize, Serialize};
 use std::io::{self, Write};
 use std::path::PathBuf;
@@ -84,44 +85,65 @@ pub async fn run(args: &ChatArgs) {
         println!("{}", "─".repeat(std::cmp::min(usize::from(tw.saturating_sub(1)), 50)));
     }
 
-    loop {
-        // Clear line before prompt to avoid terminal residual chars
-        let prompt = if narrow { "\n> " } else { "> " };
-        print!("\r\x1B[2K{prompt}");
-        io::stdout().flush().unwrap();
+    // Initialize rustyline for zsh-like input editing
+    let mut rl = if narrow {
+        // Disable raw mode on narrow terminals (some SSH clients struggle)
+        DefaultEditor::new().ok()
+    } else {
+        DefaultEditor::new().ok()
+    };
 
-        let mut input = String::new();
-        match io::stdin().read_line(&mut input) {
-            Ok(0) => break,
-            Ok(_) => {}
-            Err(e) if e.kind() == io::ErrorKind::Interrupted => { println!(); break; }
-            Err(e) => { eprintln!("\nerror: {e}"); break; }
-        }
+    // Load history
+    let hist_path = config_dir().join("history.txt");
+    if let Some(ref mut rl) = rl {
+        let _ = rl.load_history(&hist_path);
+    }
+
+    loop {
+        let prompt = if narrow { "> " } else { "> " };
+
+        let input = if let Some(ref mut rl) = rl {
+            match rl.readline(prompt) {
+                Ok(line) => {
+                    let _ = rl.add_history_entry(&line);
+                    let _ = rl.save_history(&hist_path);
+                    line
+                }
+                Err(rustyline::error::ReadlineError::Interrupted) => { println!(); break; }
+                Err(_) => break, // EOF or error
+            }
+        } else {
+            // Fallback: plain readline
+            print!("{prompt}"); io::stdout().flush().unwrap();
+            let mut buf = String::new();
+            match io::stdin().read_line(&mut buf) {
+                Ok(0) => break,
+                Ok(_) => buf,
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => { println!(); break; }
+                Err(e) => { eprintln!("\nerror: {e}"); break; }
+            }
+        };
 
         let mut input = input.trim_end().to_string();
         if input.is_empty() { continue; }
 
         // Multi-line input: line ends with \  or starts with ```
         if input.ends_with('\\') {
-            input.pop(); // remove trailing backslash
+            input.pop();
             loop {
-                let sub = read_line_raw();
-                let sub = sub.trim_end().to_string();
+                let sub = rl_readline_raw(&mut rl, &hist_path);
                 if sub.is_empty() { break; }
-                let should_continue = sub.ends_with('\\');
-                let sub = if should_continue { sub[..sub.len()-1].to_string() } else { sub };
-                input.push('\n');
-                input.push_str(&sub);
-                if !should_continue { break; }
+                let cont = sub.ends_with('\\');
+                let sub = if cont { sub[..sub.len()-1].to_string() } else { sub };
+                input.push('\n'); input.push_str(&sub);
+                if !cont { break; }
             }
         } else if input.starts_with("```") {
             let fence = input.clone();
             loop {
-                let sub = read_line_raw();
-                let sub = sub.trim_end().to_string();
-                input.push('\n');
-                input.push_str(&sub);
-                if sub == fence || sub.trim() == "```" { break; }
+                let sub = rl_readline_raw(&mut rl, &hist_path);
+                input.push('\n'); input.push_str(&sub);
+                if sub.trim() == "```" || sub == fence { break; }
             }
         }
 
@@ -327,11 +349,26 @@ fn terminal_width() -> u16 {
     80
 }
 
+fn config_dir() -> PathBuf {
+    dirs::config_dir().unwrap_or_else(|| PathBuf::from("~/.config")).join("dscode")
+}
+
 fn is_narrow_terminal() -> bool { terminal_width() <= 80 }
 
-/// Read one line from stdin without trimming
-fn read_line_raw() -> String {
-    let mut buf = String::new();
-    io::stdin().read_line(&mut buf).ok();
-    buf
+/// Read one line using rustyline (or plain stdin fallback)
+fn rl_readline_raw(rl: &mut Option<DefaultEditor>, hist_path: &PathBuf) -> String {
+    if let Some(ref mut rl) = rl {
+        match rl.readline("") {
+            Ok(line) => {
+                let _ = rl.add_history_entry(&line);
+                let _ = rl.save_history(hist_path);
+                line.trim_end().to_string()
+            }
+            Err(_) => String::new(),
+        }
+    } else {
+        let mut buf = String::new();
+        io::stdin().read_line(&mut buf).ok();
+        buf.trim_end().to_string()
+    }
 }
