@@ -698,10 +698,15 @@ fn highlight_code_line(line: &str, lang: &str) -> String {
             continue;
         }
 
-        // Split by word boundaries
+        // Split by word boundaries (char-safe for CJK)
         let word_end = rest.find(|c: char| !c.is_alphanumeric() && c != '_').unwrap_or(rest.len());
         let word = &rest[..word_end];
-        let after = if word_end < rest.len() { &rest[word_end..word_end+1] } else { "" };
+        let after = if word_end < rest.len() {
+            rest[word_end..].chars().next().map(|c| {
+                let end = word_end + c.len_utf8();
+                &rest[word_end..end]
+            }).unwrap_or("")
+        } else { "" };
 
         // Keyword highlighting
         if !word.is_empty() && keywords.contains(&word) {
