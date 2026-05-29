@@ -190,31 +190,47 @@ pub async fn call_stream(
                 if let Some(delta) = parsed["choices"][0]["delta"]["content"].as_str() {
                     full.push_str(delta);
                     usage.tokens_out += delta.len() as u64 / 4;
-                    // Render content: buffer lines for proper block-level Markdown
-                    for ch in delta.chars() {
-                        if ch == '\n' {
-                            // Complete line — render with full Markdown support
-                            let rendered = render_line(&line_buf, in_code_block);
-                            print!("{rendered}");
-                            // Track code fence state
-                            let trimmed = line_buf.trim();
-                            if trimmed.starts_with("```") {
-                                in_code_block = !in_code_block;
-                            }
-                            line_buf.clear();
-                            if narrow { print!("\r\x1B[2K"); col = 0; }
-                        } else {
-                            line_buf.push(ch);
-                            if narrow {
+
+                    if narrow {
+                        // Narrow: character-by-character for word wrap, batch output
+                        let mut out = String::new();
+                        for ch in delta.chars() {
+                            if ch == '\n' {
+                                out.push_str(&render_line(&line_buf, in_code_block));
+                                if line_buf.trim().starts_with("```") { in_code_block = !in_code_block; }
+                                line_buf.clear();
+                                out.push_str("\r\x1B[2K");
+                                col = 0;
+                            } else {
+                                line_buf.push(ch);
                                 col += 1;
                                 if col >= max_col && ch.is_whitespace() {
-                                    print!("\n\r\x1B[2K");
+                                    out.push_str("\n\r\x1B[2K");
                                     col = 0;
                                 }
                             }
                         }
+                        if !out.is_empty() { print!("{out}"); io::stdout().flush().ok(); }
+                    } else {
+                        // Non-narrow: batch lines, skip character-by-character iteration
+                        if delta.contains('\n') {
+                            let mut out = String::new();
+                            for segment in delta.split_inclusive('\n') {
+                                if let Some(content) = segment.strip_suffix('\n') {
+                                    line_buf.push_str(content);
+                                    out.push_str(&render_line(&line_buf, in_code_block));
+                                    if line_buf.trim().starts_with("```") { in_code_block = !in_code_block; }
+                                    line_buf.clear();
+                                } else {
+                                    line_buf.push_str(segment);
+                                }
+                            }
+                            if !out.is_empty() { print!("{out}"); io::stdout().flush().ok(); }
+                        } else {
+                            // No newlines — just accumulate for the next chunk
+                            line_buf.push_str(delta);
+                        }
                     }
-                    io::stdout().flush().ok();
                 }
                 // Non-streaming tool_calls (from finish_reason)
                 if let Some(tc_array) = parsed["choices"][0]["message"]["tool_calls"].as_array() {
@@ -236,18 +252,24 @@ pub async fn call_stream(
     if !line_buf.is_empty() {
         let rendered = render_line(&line_buf, in_code_block);
         print!("{rendered}");
+    } else {
+        // Only add newline if there was any output at all
+        println!();
     }
-    println!();
     let final_calls: Vec<ToolCall> = tool_calls.into_values().filter(|t| !t.name.is_empty()).collect();
     Ok(StreamResult { content: full, reasoning_content: reasoning, tool_calls: final_calls, usage })
 }
 
 /// Render one complete line with Markdown formatting.
-/// Inside code blocks: raw output. Outside: full md_to_ansi.
+/// Inside code blocks: raw output (except closing ``` which shows a separator).
+/// Outside: full md_to_ansi.
 fn render_line(line: &str, in_code: bool) -> String {
     if in_code {
-        // Inside code block: just add line break (full block assembled in md_to_ansi)
-        format!("{}\n", line)
+        if line.trim_start().starts_with("```") {
+            format!("\x1B[90m{}\x1B[0m\n", "─".repeat(16))
+        } else {
+            format!("{}\n", line)
+        }
     } else {
         // Full Markdown rendering per line
         md_to_ansi_line(line)
@@ -279,13 +301,24 @@ fn md_to_ansi_line(line: &str) -> String {
         let label = if lang.is_empty() { "code" } else { lang };
         return format!("\x1B[90m─── {} ───\x1B[0m\n", label);
     }
-    // List items
-    let prefix = if trimmed.starts_with("- ") { "  • " }
-        else if trimmed.starts_with("* ") { "  • " }
-        else if trimmed.starts_with("  ") { "  " }
-        else { "" };
-    let body = if !prefix.is_empty() && trimmed.len() > 2 {
-        &trimmed[2..]
+    // List items (unordered and ordered)
+    let list_prefix = if trimmed.starts_with("- ") { Some(format!("  • ")) }
+        else if trimmed.starts_with("* ") { Some(format!("  • ")) }
+        else {
+            // Numbered list: "1. item", "12. item"
+            let dot_pos = trimmed.find(". ");
+            match dot_pos {
+                Some(pos) if pos > 0 && trimmed[..pos].chars().all(|c| c.is_ascii_digit()) => {
+                    Some(format!("  {}. ", &trimmed[..pos]))
+                }
+                _ => None,
+            }
+        };
+    let body = if let Some(ref _p) = list_prefix {
+        // Strip the list marker ("- ", "* ", "12. ")
+        let skip = if trimmed.starts_with("- ") || trimmed.starts_with("* ") { 2 }
+                    else { trimmed.find(". ").map(|p| p + 2).unwrap_or(2) };
+        if skip < trimmed.len() { &trimmed[skip..] } else { "" }
     } else {
         line
     };
@@ -296,15 +329,14 @@ fn md_to_ansi_line(line: &str) -> String {
     s = replace_pattern(&s, "*", "\x1B[3m", "\x1B[23m");
     s = replace_inline_code(&s);
 
-    if !prefix.is_empty() {
-        format!("{}{}\n", prefix, s)
+    if let Some(p) = list_prefix {
+        format!("{}{}\n", p, s)
     } else {
         format!("{}\n", s)
     }
 }
 
 /// Full Markdown → ANSI rendering for display of complete messages.
-/// Supports: **bold**, *italic*, `code`, # headings, - lists, ```blocks```, > quotes.
 /// Supports: **bold**, *italic*, `code`, # headings, - lists, ```blocks```, > quotes.
 pub fn md_to_ansi(text: &str) -> String {
     // Process line by line for block-level formatting
@@ -365,11 +397,28 @@ pub fn md_to_ansi(text: &str) -> String {
             continue;
         }
 
-        // List items
-        let prefix = if trimmed.starts_with("- ") { "  • " } else if trimmed.starts_with("* ") { "  • " } else if trimmed.chars().next().map_or(false, |c| c.is_ascii_digit()) && trimmed.contains(". ") { "" } else { "" };
+        // List items (unordered and ordered)
+        let list_prefix = if trimmed.starts_with("- ") { Some("  • ".to_string()) }
+            else if trimmed.starts_with("* ") { Some("  • ".to_string()) }
+            else {
+                let dot_pos = trimmed.find(". ");
+                match dot_pos {
+                    Some(pos) if pos > 0 && trimmed[..pos].chars().all(|c| c.is_ascii_digit()) => {
+                        Some(format!("  {}. ", &trimmed[..pos]))
+                    }
+                    _ => None,
+                }
+            };
+        let content = if let Some(ref _p) = list_prefix {
+            let skip = if trimmed.starts_with("- ") || trimmed.starts_with("* ") { 2 }
+                        else { trimmed.find(". ").map(|p| p + 2).unwrap_or(2) };
+            if skip < trimmed.len() { &trimmed[skip..] } else { "" }
+        } else {
+            line
+        };
 
         // Inline formatting
-        let mut inline = if !prefix.is_empty() { format!("{}{}", prefix, &trimmed[2..]) } else { line.to_string() };
+        let mut inline = if let Some(ref p) = list_prefix { format!("{}{}", p, content) } else { content.to_string() };
         // **bold**
         inline = replace_pattern(&inline, "**", "\x1B[1m", "\x1B[22m");
         // *italic*
@@ -462,7 +511,7 @@ fn highlight_code(code: &str, lang: &str) -> String {
     for line in code.lines() {
         let trimmed = line.trim();
         // Comment line
-        let comment_prefixes = ["//", "#", "--", "//"];
+        let comment_prefixes = ["//", "#", "--"];
         if comment_prefixes.iter().any(|p| trimmed.starts_with(p)) {
             out.push_str(&format!("\x1B[90m{}\x1B[0m\n", line));
             continue;
@@ -543,6 +592,6 @@ pub async fn call_nonstream(
         reasoning_tokens: data["usage"]["completion_tokens_details"]["reasoning_tokens"].as_u64().unwrap_or(0),
     };
     let content = data["choices"][0]["message"]["content"].as_str().unwrap_or("(no response)").to_string();
-    println!("{content}");
+    print!("{}", md_to_ansi(&content));
     Ok((content, usage))
 }
