@@ -4,7 +4,7 @@
 /// "send → stream" API, so this bridges the gap.
 
 use std::collections::BTreeMap;
-use std::io::{self, Write};
+use std::io::{self, IsTerminal, Write};
 use std::path::PathBuf;
 
 // ── Model resolution ──────────────────────────────────────────
@@ -233,7 +233,7 @@ pub async fn call_stream(
                                 }
                             }
                         }
-                        if !out.is_empty() { print!("{out}"); io::stdout().flush().ok(); }
+                        if !out.is_empty() { oprint(&out); io::stdout().flush().ok(); }
                     } else {
                         // Non-narrow: batch lines, skip character-by-character iteration
                         if delta.contains('\n') {
@@ -261,7 +261,7 @@ pub async fn call_stream(
                                     line_buf.push_str(segment);
                                 }
                             }
-                            if !out.is_empty() { print!("{out}"); io::stdout().flush().ok(); }
+                            if !out.is_empty() { oprint(&out); io::stdout().flush().ok(); }
                         } else {
                             // No newlines — just accumulate for the next chunk
                             line_buf.push_str(delta);
@@ -287,17 +287,17 @@ pub async fn call_stream(
     // Flush remaining content in line buffer
     if !line_buf.is_empty() {
         let rendered = render_line(&line_buf, in_code_block);
-        print!("{rendered}");
+        oprint(&rendered);
     }
     // Flush any buffered table
     if in_table && !table_buf.is_empty() {
-        print!("{}", render_table(&table_buf));
+        oprint(&render_table(&table_buf));
         table_buf.clear();
         in_table = false;
     }
     if line_buf.is_empty() && !in_table {
         // Only add newline if there was any output at all
-        println!();
+        oprint("\n");
     }
     let final_calls: Vec<ToolCall> = tool_calls.into_values().filter(|t| !t.name.is_empty()).collect();
     Ok(StreamResult { content: full, reasoning_content: reasoning, tool_calls: final_calls, usage })
@@ -547,6 +547,31 @@ fn render_table(rows: &[String]) -> String {
     out
 }
 
+/// Strip ANSI escape sequences for piped output.
+fn strip_ansi(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut esc = false;
+    for b in s.bytes() {
+        if esc {
+            if b == b'm' || b == b'H' || b == b'K' || b == b'J' { esc = false; }
+            continue;
+        }
+        if b == 0x1b { esc = true; continue; }
+        out.push(b as char);
+    }
+    out
+}
+
+/// Check if stdout is a terminal (vs piped to file or another command).
+fn use_color() -> bool {
+    std::io::stdout().is_terminal()
+}
+
+/// Print with ANSI stripping when piped.
+fn oprint(text: &str) {
+    if use_color() { print!("{text}"); } else { print!("{}", strip_ansi(text)); }
+}
+
 /// Thin wrapper: convert &[&str] to owned Vec and delegate.
 fn render_table_str(rows: &[&str]) -> String {
     let owned: Vec<String> = rows.iter().map(|s| s.to_string()).collect();
@@ -719,6 +744,6 @@ pub async fn call_nonstream(
         cache_miss_tokens: u["prompt_cache_miss_tokens"].as_u64().unwrap_or(0),
     };
     let content = data["choices"][0]["message"]["content"].as_str().unwrap_or("(no response)").to_string();
-    print!("{}", md_to_ansi(&content));
+    if use_color() { print!("{}", md_to_ansi(&content)); } else { println!("{content}"); }
     Ok((content, usage))
 }
