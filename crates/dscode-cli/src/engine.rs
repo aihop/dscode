@@ -139,8 +139,23 @@ impl AgentEngine {
                         "tool_call_id": tc.id,
                         "content": result,
                     }));
-                    if options.narrow && !options.silent {
-                        eprintln!("\x1B[90m─ tool: {}(..) → {} chars\x1B[0m", tc.name, result.len());
+                    if !options.silent {
+                        if options.narrow {
+                            eprintln!("\x1B[90m─ tool: {}(..) → {} chars\x1B[0m", tc.name, result.len());
+                        } else {
+                            // On desktop/non-narrow, show a bit more context
+                            println!("\x1B[90m─ tool: {} ───────────────────\x1B[0m", tc.name);
+                            if result.lines().count() > 15 {
+                                // Show first few lines and last few lines if long
+                                let lines: Vec<&str> = result.lines().collect();
+                                for l in lines.iter().take(5) { println!("\x1B[90m  {}\x1B[0m", l); }
+                                println!("\x1B[90m  ... ({} lines total) ...\x1B[0m", lines.len());
+                                for l in lines.iter().rev().take(5).collect::<Vec<_>>().into_iter().rev() { println!("\x1B[90m  {}\x1B[0m", l); }
+                            } else {
+                                for l in result.lines() { println!("\x1B[90m  {}\x1B[0m", l); }
+                            }
+                            println!("\x1B[90m──────────────────────────────────────\x1B[0m");
+                        }
                     }
                 }
                 // Loop continues to let model see tool results

@@ -68,9 +68,9 @@ fn md_to_ansi_line(line: &str) -> String {
     s = replace_inline_code(&s);
 
     if let Some(p) = list_prefix {
-        format!("{}{}\n", p, s)
+        format!("{}{}", p, s)
     } else {
-        format!("{}\n", s)
+        s
     }
 }
 
@@ -402,7 +402,7 @@ fn highlight_code_line(line: &str, lang: &str) -> String {
     let trimmed = line.trim();
     let comment_prefixes = ["//", "#", "--"];
     if comment_prefixes.iter().any(|p| trimmed.starts_with(p)) {
-        return format!("\x1B[90m{}\x1B[0m\n", line);
+        return format!("\x1B[90m{}\x1B[0m", line);
     }
 
     let mut result = String::new();
@@ -455,7 +455,6 @@ fn highlight_code_line(line: &str, lang: &str) -> String {
         result.push_str(after);
         rest = &rest[word_end + after.len()..];
     }
-    result.push('\n');
     result
 }
 
@@ -465,6 +464,7 @@ fn highlight_code(code: &str, lang: &str) -> String {
     let mut out = String::new();
     for line in code.lines() {
         out.push_str(&highlight_code_line(line, lang));
+        out.push('\n');
     }
     out
 }

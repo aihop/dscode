@@ -154,8 +154,6 @@ pub async fn call_stream(
     let mut line_buf = String::new();
     let mut in_code_block = false;
     let mut code_lang = String::new();
-    let mut in_table = false;
-    let mut table_buf: Vec<String> = Vec::new();
     let mut stream = response.bytes_stream();
     let mut col: u16 = 0;
     let max_col = terminal_width.saturating_sub(2);
@@ -199,9 +197,20 @@ pub async fn call_stream(
                 let delta = parsed["choices"][0]["delta"]["content"].as_str().unwrap_or("");
                 let reasoning_delta = parsed["choices"][0]["delta"]["reasoning_content"].as_str().unwrap_or("");
 
-                // Accumulate reasoning for preservation
+                // Accumulate and print reasoning
                 if !reasoning_delta.is_empty() {
                     reasoning.push_str(reasoning_delta);
+                    if !silent {
+                        // Print reasoning in gray, handle newlines
+                        for ch in reasoning_delta.chars() {
+                            if ch == '\n' {
+                                print!("\n");
+                            } else {
+                                print!("\x1B[90m{ch}\x1B[0m");
+                            }
+                        }
+                        io::stdout().flush().ok();
+                    }
                 }
 
                 if !delta.is_empty() {
@@ -212,6 +221,7 @@ pub async fn call_stream(
                         for ch in delta.chars() {
                             if ch == '\n' {
                                 out.push_str(&render::render_line(&line_buf, in_code_block, &code_lang));
+                                out.push('\n');
                                 // Update code block status after rendering the line
                                 let trimmed = line_buf.trim();
                                 if trimmed.starts_with("```") {
@@ -220,7 +230,6 @@ pub async fn call_stream(
                                     in_code_block = !in_code_block;
                                 }
                                 line_buf.clear();
-                                out.push_str("\r\x1B[2K");
                                 col = 0;
                             } else {
                                 line_buf.push(ch);
@@ -230,8 +239,8 @@ pub async fn call_stream(
                                 if col >= max_col {
                                     if ch.is_whitespace() || col >= max_col + 10 {
                                         out.push_str(&render::render_line(&line_buf, in_code_block, &code_lang));
+                                        out.push('\n');
                                         line_buf.clear();
-                                        out.push_str("\r\x1B[2K");
                                         col = 0;
                                     }
                                 }
@@ -239,44 +248,31 @@ pub async fn call_stream(
                         }
                         if !out.is_empty() && !silent { render::oprint(&out); io::stdout().flush().ok(); }
                     } else {
-                        // Non-narrow: batch lines, skip character-by-character iteration
-                        if delta.contains('\n') {
-                            let mut out = String::new();
-                            for segment in delta.split_inclusive('\n') {
-                                if let Some(content) = segment.strip_suffix('\n') {
-                                    line_buf.push_str(content);
-                                    // Table detection
-                                    let trimmed = line_buf.trim();
-                                    if trimmed.starts_with('|') {
-                                        table_buf.push(line_buf.clone());
-                                        in_table = true;
-                                        line_buf.clear();
-                                        continue;
-                                    }
-                                    if in_table && !trimmed.is_empty() {
-                                        out.push_str(&render::render_table(&table_buf));
-                                        table_buf.clear();
-                                        in_table = false;
-                                    }
-                                    out.push_str(&render::render_line(&line_buf, in_code_block, &code_lang));
-                                    if trimmed.starts_with("```") {
-                                        if !in_code_block { code_lang = trimmed.trim_start_matches("```").trim().to_string(); }
-                                        else { code_lang.clear(); }
-                                        in_code_block = !in_code_block;
-                                    }
-                                    line_buf.clear();
-                                } else {
-                                    line_buf.push_str(segment);
+                        // Non-narrow: still use render_line but don't force wrap as aggressively
+                        let mut out = String::new();
+                        for ch in delta.chars() {
+                            if ch == '\n' {
+                                out.push_str(&render::render_line(&line_buf, in_code_block, &code_lang));
+                                out.push('\n');
+                                let trimmed = line_buf.trim();
+                                if trimmed.starts_with("```") {
+                                    if !in_code_block { code_lang = trimmed.trim_start_matches("```").trim().to_string(); }
+                                    else { code_lang.clear(); }
+                                    in_code_block = !in_code_block;
                                 }
+                                line_buf.clear();
+                            } else {
+                                line_buf.push(ch);
+                                // For non-narrow, we can print characters directly if they are not 
+                                // part of a potential markdown trigger, but for simplicity 
+                                // and correctness of rendering, we still buffer lines.
+                                // However, we can at least ensure we don't skip the last line.
                             }
-                            if !out.is_empty() && !silent { render::oprint(&out); io::stdout().flush().ok(); }
-                        } else {
-                            // No newlines — just accumulate for the next chunk
-                            line_buf.push_str(delta);
                         }
+                        if !out.is_empty() && !silent { render::oprint(&out); io::stdout().flush().ok(); }
                     }
                 }
-                // Non-streaming tool_calls (from finish_reason)
+                // Non-streaming tool_calls (from message)
                 if let Some(tc_array) = parsed["choices"][0]["message"]["tool_calls"].as_array() {
                     for tc in tc_array {
                         let idx = tc["index"].as_u64().unwrap_or(0) as usize;
@@ -285,7 +281,11 @@ pub async fn call_stream(
                         });
                         if let Some(id) = tc["id"].as_str() { entry.id = id.to_string(); }
                         if let Some(name) = tc["function"]["name"].as_str() { entry.name = name.to_string(); }
-                        if let Some(args) = tc["function"]["arguments"].as_str() { entry.arguments = args.to_string(); }
+                        if let Some(args) = tc["function"]["arguments"].as_str() {
+                            entry.arguments = args.to_string();
+                        } else if !tc["function"]["arguments"].is_null() {
+                            entry.arguments = tc["function"]["arguments"].to_string();
+                        }
                     }
                 }
                 // Streaming tool_calls (from delta)
@@ -297,20 +297,17 @@ pub async fn call_stream(
                         });
                         if let Some(id) = tc["id"].as_str() { entry.id = id.to_string(); }
                         if let Some(name) = tc["function"]["name"].as_str() { entry.name = name.to_string(); }
-                        if let Some(args) = tc["function"]["arguments"].as_str() { entry.arguments = args.to_string(); }
+                        if let Some(args) = tc["function"]["arguments"].as_str() {
+                            entry.arguments.push_str(args);
+                        }
                     }
                 }
             }
         }
     }
 
-    // Flush remaining line buffer
     if !line_buf.is_empty() && !silent {
         let flushed = render::render_line(&line_buf, in_code_block, &code_lang);
-        if !flushed.is_empty() { render::oprint(&flushed); io::stdout().flush().ok(); }
-    }
-    if !table_buf.is_empty() && !silent {
-        let flushed = render::render_table(&table_buf);
         if !flushed.is_empty() { render::oprint(&flushed); io::stdout().flush().ok(); }
     }
     if !silent { println!(); }
