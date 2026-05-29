@@ -159,10 +159,10 @@ async fn run_sub_agent(
         system_prompt: "You are a helpful sub-agent. Focus on the task provided.".to_string(),
         tools: Some(crate::api::tool_definitions()),
         max_rounds: 15,
-        narrow: false,
-        silent: true,
-        terminal_width: 80,
-        cwd: cwd.to_path_buf(),
+            narrow: false,
+            silent: true,
+            approval_mode: false,
+            terminal_width: 80,        cwd: cwd.to_path_buf(),
     };
 
     match engine.run_loop(&options, history).await {

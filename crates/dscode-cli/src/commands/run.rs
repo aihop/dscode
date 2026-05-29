@@ -20,8 +20,9 @@ pub struct RunArgs {
     /// Disable streaming
     #[arg(long)]
     pub no_stream: bool,
-}
-
+    /// Approval mode: confirm before writing files or running shell commands
+    #[arg(long)]
+      pub approve: bool}
 pub async fn run(args: &RunArgs) {
     api::ensure_default_config();
     let model = resolve_model_name(
@@ -70,11 +71,11 @@ pub async fn run(args: &RunArgs) {
         system_prompt: sys_content,
         tools: tools_list,
         max_rounds: 25,
-        narrow,
-        silent: false,
-        terminal_width: tw,
-        cwd: std::env::current_dir().unwrap_or_default(),
-    };
+            narrow,
+            silent: false,
+            approval_mode: args.approve,
+            terminal_width: tw,
+            cwd: std::env::current_dir().unwrap_or_default(),    };
 
     match engine.run_loop(&options, api_msgs).await {
         Ok(_) => {}

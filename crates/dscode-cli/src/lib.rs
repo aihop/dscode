@@ -127,13 +127,13 @@ fn inner_run() -> std::process::ExitCode {
         None => {
             // default: chat auto-resume latest session
             rt.block_on(commands::chat::run(&commands::chat::ChatArgs {
-                model: None,
-                session: None,
-                new: false,
-                system: None,
-                plain: false,
-                no_stream: false,
-            }));
+                    model: None,
+                    session: None,
+                    new: false,
+                    system: None,
+                    plain: false,
+                    no_stream: false,
+                    approve: false,            }));
         }
     }
 

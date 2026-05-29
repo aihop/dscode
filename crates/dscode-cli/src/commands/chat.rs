@@ -27,10 +27,11 @@ pub struct ChatArgs {
     pub system: Option<String>,
     #[arg(long, help = "Disable tools (plain chat mode, no agent)")]
     pub plain: bool,
-    #[arg(long, help = "Disable streaming output")]
-    pub no_stream: bool,
+      #[arg(long, help = "Disable streaming output")]
+      pub no_stream: bool,
+      #[arg(long, help = "Approval mode: confirm before writing files or running shell commands")]
+        pub approve: bool,
 }
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Message {
     role: String,
@@ -279,17 +280,17 @@ You are running directly in the project root directory. Always use relative path
             j
         }).collect();
 
-        let options = AgentOptions {
-            model: model.clone(),
-            system_prompt: sys_content,
-            tools: tools_list,
-            max_rounds: 30,
-            narrow,
-            silent: false,
-            terminal_width: tw,
-            cwd: std::env::current_dir().unwrap_or_default(),
-        };
-
+          let options = AgentOptions {
+              model: model.clone(),
+              system_prompt: sys_content,
+              tools: tools_list,
+              max_rounds: 30,
+              narrow,
+              silent: false,
+              approval_mode: args.approve,
+              terminal_width: tw,
+              cwd: std::env::current_dir().unwrap_or_default(),
+          };
         match engine.run_loop(&options, history).await {
             Ok((new_api_msgs, usage)) => {
                 if usage.tokens_out > 0 {
