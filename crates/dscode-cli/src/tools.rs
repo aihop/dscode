@@ -64,6 +64,10 @@ impl ToolHandler for DscHandler {
             "git_blame" => exec_git_blame(&self.ctx, &args),
             "file_search" => exec_file_search(&self.ctx, &args),
             "apply_patch" => exec_apply_patch(&self.ctx, &args),
+            "git_diff" => exec_git_diff(&self.ctx, &args),
+            "git_add" => exec_git_add(&self.ctx, &args),
+            "git_commit" => exec_git_commit(&self.ctx, &args),
+            "git_push" => exec_git_push(&self.ctx, &args),
             _ => format!("unknown tool: {}", invocation.tool_name),
         };
 
@@ -255,6 +259,58 @@ fn tool_specs() -> Vec<ToolSpec> {
             supports_parallel_tool_calls: false,
             timeout_ms: Some(30_000),
         },
+        ToolSpec {
+            name: "git_diff".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Optional file/subdirectory to scope diff"},
+                    "cached": {"type": "boolean", "description": "Show staged changes only (default false)"}
+                }
+            }),
+            output_schema: json!({}),
+            supports_parallel_tool_calls: true,
+            timeout_ms: Some(15_000),
+        },
+        ToolSpec {
+            name: "git_add".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "File path or glob pattern to stage (default .)"}
+                },
+                "required": ["path"]
+            }),
+            output_schema: json!({}),
+            supports_parallel_tool_calls: false,
+            timeout_ms: Some(15_000),
+        },
+        ToolSpec {
+            name: "git_commit".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "message": {"type": "string", "description": "Commit message"}
+                },
+                "required": ["message"]
+            }),
+            output_schema: json!({}),
+            supports_parallel_tool_calls: false,
+            timeout_ms: Some(15_000),
+        },
+        ToolSpec {
+            name: "git_push".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "remote": {"type": "string", "description": "Remote name (default: origin)"},
+                    "branch": {"type": "string", "description": "Branch name (default: current branch)"}
+                }
+            }),
+            output_schema: json!({}),
+            supports_parallel_tool_calls: false,
+            timeout_ms: Some(30_000),
+        },
     ]
 }
 
@@ -324,6 +380,10 @@ fn tool_description(name: &str) -> &'static str {
         "git_blame"   => "Show who last modified each line of a file. Optional line range.",
         "file_search" => "Search for files by name (fuzzy match). Returns matching file paths.",
         "apply_patch" => "Apply a unified-diff patch to the working tree (via git apply).",
+        "git_diff"    => "Show working tree diff (unstaged or staged changes). Optional path scope.",
+        "git_add"     => "Stage file(s) for commit. Path can be a file or glob pattern.",
+        "git_commit"  => "Create a commit with a message. Requires prior git_add.",
+        "git_push"    => "Push commits to remote repository.",
         _             => "Run a tool by name",
     }
 }
@@ -789,6 +849,76 @@ fn exec_apply_patch(ctx: &ToolCtx, args: &str) -> String {
         Ok(o) if o.status.success() => "patch applied successfully".to_string(),
         Ok(o) => format!("patch failed:\n{}", String::from_utf8_lossy(&o.stderr)),
         Err(e) => format!("git apply error: {e}"),
+    }
+}
+
+// ── Git write tools ───────────────────────────────────────────
+
+fn exec_git_diff(ctx: &ToolCtx, args: &str) -> String {
+    let v: Value = serde_json::from_str(args).unwrap_or_default();
+    let path = v["path"].as_str().unwrap_or("");
+    let cached = v["cached"].as_bool().unwrap_or(false);
+    let mut cmd = std::process::Command::new("git");
+    cmd.arg("diff");
+    if cached { cmd.arg("--cached"); }
+    if !path.is_empty() { cmd.arg(path); }
+    cmd.current_dir(&ctx.cwd);
+    match cmd.output() {
+        Ok(o) if o.status.success() => {
+            let out = String::from_utf8_lossy(&o.stdout).to_string();
+            if out.is_empty() { "no changes".to_string() }
+            else { out }
+        }
+        Ok(o) => format!("git diff failed: {}", String::from_utf8_lossy(&o.stderr)),
+        Err(e) => format!("git diff error: {e}"),
+    }
+}
+
+fn exec_git_add(ctx: &ToolCtx, args: &str) -> String {
+    let v: Value = serde_json::from_str(args).unwrap_or_default();
+    let path = v["path"].as_str().unwrap_or(".");
+    match std::process::Command::new("git")
+        .args(["add", path])
+        .current_dir(&ctx.cwd)
+        .output()
+    {
+        Ok(o) if o.status.success() => format!("staged {path}"),
+        Ok(o) => format!("git add failed: {}", String::from_utf8_lossy(&o.stderr)),
+        Err(e) => format!("git add error: {e}"),
+    }
+}
+
+fn exec_git_commit(ctx: &ToolCtx, args: &str) -> String {
+    let v: Value = serde_json::from_str(args).unwrap_or_default();
+    let msg = v["message"].as_str().unwrap_or("");
+    if msg.is_empty() { return "error: no commit message".to_string(); }
+    match std::process::Command::new("git")
+        .args(["commit", "-m", msg])
+        .current_dir(&ctx.cwd)
+        .output()
+    {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).trim().to_string(),
+        Ok(o) => format!("commit failed: {}", String::from_utf8_lossy(&o.stderr)),
+        Err(e) => format!("commit error: {e}"),
+    }
+}
+
+fn exec_git_push(ctx: &ToolCtx, args: &str) -> String {
+    let v: Value = serde_json::from_str(args).unwrap_or_default();
+    let remote = v["remote"].as_str().unwrap_or("origin");
+    let branch = v["branch"].as_str().unwrap_or("");
+    let mut cmd = std::process::Command::new("git");
+    cmd.args(["push", remote]);
+    if !branch.is_empty() { cmd.arg(branch); }
+    cmd.current_dir(&ctx.cwd);
+    match cmd.output() {
+        Ok(o) if o.status.success() => {
+            let out = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            if out.is_empty() { "pushed successfully".to_string() }
+            else { out }
+        }
+        Ok(o) => format!("push failed: {}", String::from_utf8_lossy(&o.stderr)),
+        Err(e) => format!("push error: {e}"),
     }
 }
 
