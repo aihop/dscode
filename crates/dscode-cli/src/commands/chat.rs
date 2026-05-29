@@ -308,8 +308,8 @@ pub async fn run(args: &ChatArgs) {
                     }
                 }
                 Err(e) => {
-                    // Model fallback: retry with fallback model once
-                    if !fallback_attempted {
+                    // Only fall back if user didn't explicitly choose a model
+                    if !args.model.is_some() && !fallback_attempted {
                         if let Some(fb) = fallback_model(&current_model) {
                             let msg = format!("{current_model} failed, retrying with {fb}…");
                             if narrow { eprintln!("─ {msg}"); } else { eprintln!("\x1B[33m{msg}\x1B[0m"); }
