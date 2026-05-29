@@ -1,5 +1,4 @@
 use clap::Subcommand;
-use serde_json::Value;
 
 #[derive(Debug, Subcommand)]
 pub enum SessionCommands {

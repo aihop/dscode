@@ -3,7 +3,7 @@
 /// Thin UX layer on top of CodeWhale engine + shared api.rs.
 /// Session persistence via JSON, narrow-terminal aware.
 
-use crate::api::{self, UsageInfo, resolve_model_name, resolve_api_key, resolve_base_url};
+use crate::api::{self, resolve_model_name, resolve_api_key, resolve_base_url};
 use chrono::Utc;
 use clap::Args;
 use serde::{Deserialize, Serialize};
@@ -166,8 +166,6 @@ pub async fn run(args: &ChatArgs) {
         // Agent loop: chat → tool_calls → execute → chat → ...
         let max_agent_rounds = 15;
         let mut agent_round = 0;
-        let mut final_content = String::new();
-
         loop {
             agent_round += 1;
             if agent_round > max_agent_rounds { break; }
@@ -213,7 +211,6 @@ pub async fn run(args: &ChatArgs) {
                             content: stream_res.content.clone(),
                             created_at: Utc::now().timestamp(),
                         });
-                        final_content = stream_res.content;
                         if narrow { eprintln!("─ {:.0} tok", stream_res.usage.tokens_out); }
                         save_session(&model, &messages);
                         break;

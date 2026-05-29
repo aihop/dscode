@@ -6,7 +6,7 @@
 ///        dscode completion fish  >  ~/.config/fish/completions/dscode.fish
 
 use clap::CommandFactory;
-use clap_complete::{Generator, Shell};
+use clap_complete::Shell;
 use std::io;
 
 #[derive(Debug, clap::Args)]

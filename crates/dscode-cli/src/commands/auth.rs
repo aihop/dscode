@@ -178,7 +178,7 @@ fn resolve_api_key_from_store() -> Option<String> {
     if let Ok(k) = std::env::var("DEEPSEEK_API_KEY") {
         if !k.trim().is_empty() { return Some(k); }
     }
-    let mut path = config_path();
+    let path = config_path();
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).ok();
     }

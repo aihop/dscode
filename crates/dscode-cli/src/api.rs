@@ -397,7 +397,6 @@ pub fn execute_tool(tc: &ToolCall) -> String {
                                         if let Some(href_end) = rest.find('\"') {
                                             let url = &rest[..href_end];
                                             // Find text after the link
-                                            let text = rest[href_end..].trim();
                                             results.push(format!("  {url}"));
                                         }
                                     }
