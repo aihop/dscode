@@ -144,6 +144,8 @@ pub async fn call_stream(
     let mut reasoning = String::new();
     let mut line_buf = String::new();
     let mut in_code_block = false;
+    let mut in_table = false;
+    let mut table_buf: Vec<String> = Vec::new();
     let mut stream = response.bytes_stream();
     let mut col: u16 = 0;
     let max_col = terminal_width.saturating_sub(2);
@@ -202,8 +204,23 @@ pub async fn call_stream(
                         let mut out = String::new();
                         for ch in delta.chars() {
                             if ch == '\n' {
+                                // Table detection
+                                let trimmed = line_buf.trim();
+                                if trimmed.starts_with('|') {
+                                    table_buf.push(line_buf.clone());
+                                    in_table = true;
+                                    line_buf.clear();
+                                    out.push_str("\r\x1B[2K");
+                                    col = 0;
+                                    continue;
+                                }
+                                if in_table && !trimmed.is_empty() {
+                                    out.push_str(&render_table(&table_buf));
+                                    table_buf.clear();
+                                    in_table = false;
+                                }
                                 out.push_str(&render_line(&line_buf, in_code_block));
-                                if line_buf.trim().starts_with("```") { in_code_block = !in_code_block; }
+                                if trimmed.starts_with("```") { in_code_block = !in_code_block; }
                                 line_buf.clear();
                                 out.push_str("\r\x1B[2K");
                                 col = 0;
@@ -224,8 +241,21 @@ pub async fn call_stream(
                             for segment in delta.split_inclusive('\n') {
                                 if let Some(content) = segment.strip_suffix('\n') {
                                     line_buf.push_str(content);
+                                    // Table detection
+                                    let trimmed = line_buf.trim();
+                                    if trimmed.starts_with('|') {
+                                        table_buf.push(line_buf.clone());
+                                        in_table = true;
+                                        line_buf.clear();
+                                        continue;
+                                    }
+                                    if in_table && !trimmed.is_empty() {
+                                        out.push_str(&render_table(&table_buf));
+                                        table_buf.clear();
+                                        in_table = false;
+                                    }
                                     out.push_str(&render_line(&line_buf, in_code_block));
-                                    if line_buf.trim().starts_with("```") { in_code_block = !in_code_block; }
+                                    if trimmed.starts_with("```") { in_code_block = !in_code_block; }
                                     line_buf.clear();
                                 } else {
                                     line_buf.push_str(segment);
@@ -258,7 +288,14 @@ pub async fn call_stream(
     if !line_buf.is_empty() {
         let rendered = render_line(&line_buf, in_code_block);
         print!("{rendered}");
-    } else {
+    }
+    // Flush any buffered table
+    if in_table && !table_buf.is_empty() {
+        print!("{}", render_table(&table_buf));
+        table_buf.clear();
+        in_table = false;
+    }
+    if line_buf.is_empty() && !in_table {
         // Only add newline if there was any output at all
         println!();
     }
@@ -351,6 +388,7 @@ pub fn md_to_ansi(text: &str) -> String {
     let mut code_buf = String::new();
 
     let mut code_lang = String::new();
+    let mut table_buf: Vec<&str> = Vec::new();
 
     for line in text.lines() {
         if line.trim_start().starts_with("```") {
@@ -375,6 +413,16 @@ pub fn md_to_ansi(text: &str) -> String {
             code_buf.push_str(line);
             code_buf.push('\n');
             continue;
+        }
+
+        // Table detection
+        if line.trim_start().starts_with('|') {
+            table_buf.push(line);
+            continue;
+        }
+        if !table_buf.is_empty() {
+            out.push_str(&render_table_str(&table_buf));
+            table_buf.clear();
         }
 
         let trimmed = line.trim();
@@ -436,12 +484,81 @@ pub fn md_to_ansi(text: &str) -> String {
         out.push('\n');
     }
 
+    // Flush buffered table
+    if !table_buf.is_empty() {
+        out.push_str(&render_table_str(&table_buf));
+        table_buf.clear();
+    }
+
     // Close unclosed code block
     if in_code_block && !code_buf.is_empty() {
         out.push_str(&format!("\x1B[90m─── code ───\x1B[0m\n{}\n\x1B[90m────────────\x1B[0m\n", code_buf));
     }
 
     out
+}
+
+// ── Table rendering ────────────────────────────────────────────
+
+/// Render a Markdown table from buffered rows with column alignment.
+/// CJK/emoji characters count as double-width for alignment.
+fn render_table(rows: &[String]) -> String {
+    if rows.is_empty() { return String::new(); }
+
+    // Parse cells, skip separator rows (|---|)
+    let parsed: Vec<Vec<String>> = rows.iter()
+        .map(|r| r.trim())
+        .filter(|r| !r.chars().all(|c| c == '|' || c == '-' || c == ':' || c == ' '))
+        .map(|r| {
+            r.trim_start_matches('|').trim_end_matches('|')
+                .split('|')
+                .map(|c| c.trim().to_string())
+                .collect()
+        })
+        .collect();
+
+    if parsed.is_empty() { return String::new(); }
+
+    let num_cols = parsed.iter().map(|r| r.len()).max().unwrap_or(0);
+    if num_cols == 0 { return String::new(); }
+
+    // Calculate column widths
+    let mut col_widths = vec![0usize; num_cols];
+    for row in &parsed {
+        for (i, cell) in row.iter().enumerate() {
+            let w = display_width(cell);
+            col_widths[i] = col_widths[i].max(w);
+        }
+    }
+
+    // Render with 2-space gap between columns
+    let mut out = String::new();
+    for row in &parsed {
+        out.push_str("  ");
+        for (i, cell) in row.iter().enumerate() {
+            if i > 0 { out.push_str("  "); }
+            let w = display_width(cell);
+            let pad = col_widths[i].saturating_sub(w);
+            out.push_str(cell);
+            if pad > 0 { out.push_str(&" ".repeat(pad)); }
+        }
+        out.push('\n');
+    }
+    out
+}
+
+/// Thin wrapper: convert &[&str] to owned Vec and delegate.
+fn render_table_str(rows: &[&str]) -> String {
+    let owned: Vec<String> = rows.iter().map(|s| s.to_string()).collect();
+    render_table(&owned)
+}
+
+/// Approximate display width of a string (CJK/emoji = 2, ASCII = 1).
+fn display_width(s: &str) -> usize {
+    s.chars().map(|c| {
+        let cp = c as u32;
+        if cp > 0x2E80 { 2 } else { 1 }
+    }).sum()
 }
 
 fn replace_pattern(text: &str, delim: &str, open: &str, close: &str) -> String {
