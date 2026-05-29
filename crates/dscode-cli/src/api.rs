@@ -12,7 +12,7 @@ use crate::render;
 // ── Constants ─────────────────────────────────────────────────
 
 /// V4 has 1M context — keep tool results intact up to 120K chars by default.
-pub const MAX_TOOL_OUTPUT_CHARS: usize = 120_000;
+pub const MAX_TOOL_OUTPUT_CHARS: usize = 40_000;
 
 // ── Model resolution ──────────────────────────────────────────
 

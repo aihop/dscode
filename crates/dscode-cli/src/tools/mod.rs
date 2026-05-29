@@ -650,7 +650,7 @@ pub(crate) fn policy_engine() -> &'static ExecPolicyEngine {
             "cargo test", "cargo run", "cargo fmt", "cargo clippy",
             "npm test", "npm run", "python", "python3", "node", "rustc",
             "grep", "find", "sort", "wc", "du -sh", "df -h", "mkdir",
-            "touch", "cp", "mv", "rm", "cat ", "less ", "more ",
+            "touch", "cp", "mv", "cat ", "less ", "more ",
         ];
         ExecPolicyEngine::with_rulesets(vec![
             Ruleset {
