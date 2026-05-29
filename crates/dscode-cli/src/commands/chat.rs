@@ -32,6 +32,7 @@ pub struct ChatArgs {
 struct Message {
     role: String,
     content: String,
+    reasoning_content: Option<String>,
     created_at: i64,
 }
 
@@ -180,7 +181,7 @@ pub async fn run(args: &ChatArgs) {
         }
 
         let ts = Utc::now().timestamp();
-        messages.push(Message { role: "user".into(), content: input, created_at: ts });
+        messages.push(Message { role: "user".into(), content: input, reasoning_content: None, created_at: ts });
 
         // Context window: trim only when approaching 1M-tok context limit
         // High threshold minimizes cache invalidation (prefix stays stable longer)
@@ -215,7 +216,13 @@ pub async fn run(args: &ChatArgs) {
             }
         }
         if let Some(sp) = &args.system { if !sp.is_empty() { api_msgs.push(serde_json::json!({"role": "system", "content": sp})); } }
-        api_msgs.extend(messages.iter().map(|m| serde_json::json!({"role": m.role, "content": m.content})));
+        api_msgs.extend(messages.iter().map(|m| {
+            let mut j = serde_json::json!({"role": m.role, "content": m.content});
+            if let Some(ref rc) = m.reasoning_content {
+                j["reasoning_content"] = serde_json::Value::String(rc.clone());
+            }
+            j
+        }));
 
         // Agent loop: chat → tool_calls → execute → chat → ...
         // With model fallback on API error + tool error recovery
@@ -277,10 +284,13 @@ pub async fn run(args: &ChatArgs) {
                         }
                         continue; // next agent round
                     } else {
-                        // Pure text response
+                        // Pure text response — include reasoning_content for context continuity
+                        let rc = if stream_res.reasoning_content.is_empty() { None }
+                            else { Some(stream_res.reasoning_content.clone()) };
                         messages.push(Message {
                             role: "assistant".into(),
                             content: stream_res.content.clone(),
+                            reasoning_content: rc,
                             created_at: Utc::now().timestamp(),
                         });
                         if narrow { eprintln!("─ {:.0} tok", stream_res.usage.tokens_out); }
@@ -365,7 +375,8 @@ fn persist_session(store: &Option<StateStore>, thread_id: &str, model: &str, mes
     // Re-write all messages
     let _ = store.clear_messages(thread_id);
     for m in messages {
-        let _ = store.append_message(thread_id, &m.role, &m.content, None);
+        let item = m.reasoning_content.as_ref().map(|rc| serde_json::json!({"reasoning_content": rc}));
+        let _ = store.append_message(thread_id, &m.role, &m.content, item);
     }
     // Update thread metadata
     let now = Utc::now().timestamp();
@@ -404,11 +415,17 @@ fn persist_session(store: &Option<StateStore>, thread_id: &str, model: &str, mes
 }
 
 /// Load thread messages from store by exact or prefix id.
+/// Convert a MessageRecord from the store into our Message struct.
+fn msg_from_record(m: codewhale_state::MessageRecord) -> Message {
+    let rc = m.item.as_ref().and_then(|v| v["reasoning_content"].as_str()).map(|s| s.to_string());
+    Message { role: m.role, content: m.content, reasoning_content: rc, created_at: m.created_at }
+}
+
 fn load_store_thread(store: &StateStore, id: &str) -> Option<(String, Vec<Message>)> {
     // Exact match
     if let Ok(Some(t)) = store.get_thread(id) {
         let msgs = store.list_messages(&t.id, None).unwrap_or_default()
-            .into_iter().map(|m| Message { role: m.role, content: m.content, created_at: m.created_at }).collect();
+            .into_iter().map(msg_from_record).collect();
         return Some((t.id, msgs));
     }
     // Prefix match
@@ -416,7 +433,7 @@ fn load_store_thread(store: &StateStore, id: &str) -> Option<(String, Vec<Messag
     for t in threads {
         if t.id.starts_with(id) {
             let msgs = store.list_messages(&t.id, None).unwrap_or_default()
-                .into_iter().map(|m| Message { role: m.role, content: m.content, created_at: m.created_at }).collect();
+                .into_iter().map(msg_from_record).collect();
             return Some((t.id, msgs));
         }
     }
@@ -428,7 +445,7 @@ fn latest_store_thread(store: &StateStore) -> Option<(String, Vec<Message>)> {
     let t = store.list_threads(ThreadListFilters { include_archived: false, limit: Some(1) })
         .ok()?.into_iter().next()?;
     let msgs = store.list_messages(&t.id, None).unwrap_or_default()
-        .into_iter().map(|m| Message { role: m.role, content: m.content, created_at: m.created_at }).collect();
+        .into_iter().map(msg_from_record).collect();
     Some((t.id, msgs))
 }
 
