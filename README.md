@@ -122,7 +122,7 @@ dscode session delete abc12345
 
 ## Agent Tools
 
-dscode includes 27 built-in tools for autonomous code work:
+dscode includes 28 built-in tools for autonomous code work:
 
 ```
 read_file      Read file contents
@@ -152,6 +152,7 @@ checklist_add  Add checklist item
 checklist_update  Update item status
 checklist_list  List all checklist items
 test_runner    Run tests and report results
+request_user_input  Ask the user for input mid-task
 ```
 
 List them anytime: `dscode tools list`

@@ -78,6 +78,7 @@ impl ToolHandler for DscHandler {
             "checklist_update" => exec_checklist_update(&args),
             "checklist_list" => exec_checklist_list(),
             "test_runner" => exec_test_runner(&self.ctx, &args).await,
+            "request_user_input" => exec_user_input(&args).await,
             _ => format!("unknown tool: {}", invocation.tool_name),
         };
 
@@ -97,7 +98,9 @@ fn tool_specs() -> Vec<ToolSpec> {
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "File path relative to project root"}
+                    "path": {"type": "string", "description": "File path relative to project root"},
+                    "start_line": {"type": "integer", "description": "First line to read (1-based, default 1)"},
+                    "max_lines": {"type": "integer", "description": "Max lines to return (default 500)"}
                 },
                 "required": ["path"]
             }),
@@ -430,6 +433,22 @@ fn tool_specs() -> Vec<ToolSpec> {
             }),
             output_schema: json!({}), supports_parallel_tool_calls: false, timeout_ms: Some(120_000),
         },
+        ToolSpec {
+            name: "request_user_input".into(),
+            input_schema: json!({
+                "type": "object", "properties": {
+                    "questions": {"type": "array", "items": {"type": "object", "properties": {
+                        "header": {"type": "string"},
+                        "id": {"type": "string"},
+                        "question": {"type": "string"},
+                        "options": {"type": "array", "items": {"type": "object", "properties": {
+                            "label": {"type": "string"}, "description": {"type": "string"}
+                        }, "required": ["label", "description"]}}
+                    }, "required": ["header", "id", "question"]}}
+                }, "required": ["questions"]
+            }),
+            output_schema: json!({}), supports_parallel_tool_calls: false, timeout_ms: Some(300_000),
+        },
     ]
 }
 
@@ -513,6 +532,7 @@ fn tool_description(name: &str) -> &'static str {
         "checklist_update" => "Update an item's status by id (pending/in_progress/completed).",
         "checklist_list"  => "List all checklist items with their current status.",
         "test_runner" => "Run tests (default: cargo test) and return structured results.",
+        "request_user_input" => "Ask the user 1-3 short questions and return their selections. Use when you need clarification.",
         _             => "Run a tool by name",
     }
 }
@@ -598,20 +618,24 @@ fn exec_read_file(ctx: &ToolCtx, args: &str) -> String {
     match std::fs::read_to_string(&full_path) {
         Ok(content) => {
             let lines: Vec<&str> = content.lines().collect();
-            let max_lines = 500;
-            if lines.len() > max_lines {
-                let head: Vec<&str> = lines[..max_lines].to_vec();
-                format!(
-                    "{} (showing first {max_lines} of {} lines)\n{}",
-                    full_path.display(),
-                    lines.len(),
-                    head.join("\n")
-                )
-            } else {
-                format!("{} ({} lines)\n{}", full_path.display(), lines.len(), content)
+            let start_line = v["start_line"].as_u64().unwrap_or(1).max(1) as usize - 1;
+            let max_lines = v["max_lines"].as_u64().unwrap_or(500).min(500) as usize;
+            let end_line = (start_line + max_lines).min(lines.len());
+            let total = lines.len();
+            let truncated = end_line < total;
+            let shown: Vec<&str> = lines[start_line..end_line].to_vec();
+            let mut out = format!("<file path=\"{}\" total_lines=\"{}\" start_line=\"{}\" end_line=\"{}\"",
+                full_path.display(), total, start_line + 1, end_line);
+            if truncated { out.push_str(" truncated=\"true\""); }
+            out.push_str(">\n");
+            for (i, line) in shown.iter().enumerate() {
+                out.push_str(&format!("{:>6}  {}\n", start_line + i + 1, line));
             }
+            if truncated { out.push_str(&format!("... ({} more lines)\n", total - end_line)); }
+            out.push_str(&format!("</file>"));
+            out
         }
-        Err(e) => format!("error reading {}: {e}", full_path.display()),
+        Err(e) => format!("<error reading {}: {e}>", full_path.display()),
     }
 }
 
@@ -1151,7 +1175,7 @@ async fn exec_fim_edit(ctx: &ToolCtx, args: &str) -> String {
     }
 }
 
-// ── Sub-agent system ────────────────────────────────────────────
+// ── Sub-agent system (with fork_context support) ────────────────
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -1170,10 +1194,16 @@ fn global_agents() -> &'static Arc<Mutex<HashMap<String, SubAgentState>>> {
     AGENTS.get_or_init(|| Arc::new(Mutex::new(HashMap::new())))
 }
 
-async fn run_sub_agent(api_key: &str, base_url: &str, _cwd: &std::path::Path, prompt: &str) -> String {
+async fn run_sub_agent(api_key: &str, base_url: &str, _cwd: &std::path::Path, prompt: &str, context_msgs: &[Value]) -> String {
     let client = reqwest::Client::new();
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
-    let mut api_msgs: Vec<Value> = vec![json!({"role": "user", "content": prompt})];
+    let mut api_msgs: Vec<Value> = if context_msgs.is_empty() {
+        vec![json!({"role": "user", "content": prompt})]
+    } else {
+        let mut msgs = context_msgs.to_vec();
+        msgs.push(json!({"role": "user", "content": prompt}));
+        msgs
+    };
 
     for _ in 0..8 {
         let mut body = json!({
@@ -1228,6 +1258,7 @@ async fn exec_agent_open(ctx: &ToolCtx, args: &str) -> String {
     let pk = api_key.clone();
     let bu = base_url.clone();
     let pr = prompt.to_string();
+    let ctx_msgs: Vec<Value> = Vec::new(); // fork_context from parent not available at tool level
 
     agents.lock().unwrap().insert(agent_id.clone(), SubAgentState {
         status: "running".into(), result: String::new(), created_at: Utc::now().timestamp(),
@@ -1235,7 +1266,7 @@ async fn exec_agent_open(ctx: &ToolCtx, args: &str) -> String {
 
     let id = agent_id.clone();
     tokio::spawn(async move {
-        let result = run_sub_agent(&pk, &bu, &cwd, &pr).await;
+        let result = run_sub_agent(&pk, &bu, &cwd, &pr, &ctx_msgs).await;
         if let Some(state) = agents.lock().unwrap().get_mut(&id) {
             state.status = if result.starts_with("error:") { "failed".into() } else { "completed".into() };
             state.result = result;
@@ -1350,6 +1381,18 @@ async fn exec_test_runner(ctx: &ToolCtx, args: &str) -> String {
             result
         }
         _ => format!("failed to run '{cmd}'"),
+    }
+}
+
+// ── User input tool ────────────────────────────────────────────
+
+async fn exec_user_input(_args: &str) -> String {
+    // Simplified: print question to stderr, read from stdin
+    eprintln!("\n\x1B[33m[Agent needs input]\x1B[0m Type your response and press Enter:");
+    let mut input = String::new();
+    match std::io::stdin().read_line(&mut input) {
+        Ok(_) => input.trim().to_string(),
+        Err(_) => "input cancelled".to_string(),
     }
 }
 
