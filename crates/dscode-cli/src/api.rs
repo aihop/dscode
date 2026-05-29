@@ -170,6 +170,70 @@ pub fn tool_definitions() -> Vec<serde_json::Value> {
                 }
             }
         }),
+        serde_json::json!({
+            "type": "function",
+            "function": {
+                "name": "git_status",
+                "description": "Show git working tree status (changed, staged, untracked files).",
+                "parameters": { "type": "object", "properties": {}, "required": [] }
+            }
+        }),
+        serde_json::json!({
+            "type": "function",
+            "function": {
+                "name": "git_diff",
+                "description": "Show git diff of unstaged changes. If path given, scope to that file.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "Optional file path to scope diff"}
+                    },
+                    "required": []
+                }
+            }
+        }),
+        serde_json::json!({
+            "type": "function",
+            "function": {
+                "name": "git_log",
+                "description": "Show recent git commit history.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "count": {"type": "integer", "description": "Number of commits (default 10)"}
+                    },
+                    "required": []
+                }
+            }
+        }),
+        serde_json::json!({
+            "type": "function",
+            "function": {
+                "name": "web_search",
+                "description": "Search the web for information. Returns ranked results with snippets and URLs.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "Search query"}
+                    },
+                    "required": ["query"]
+                }
+            }
+        }),
+        serde_json::json!({
+            "type": "function",
+            "function": {
+                "name": "fetch_url",
+                "description": "Fetch the content of a URL (HTTP GET). Returns the body as text.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "url": {"type": "string", "description": "HTTP/HTTPS URL to fetch"}
+                    },
+                    "required": ["url"]
+                }
+            }
+        }),
     ]
 }
 
@@ -267,6 +331,86 @@ pub fn execute_tool(tc: &ToolCall) -> String {
                     out
                 }
                 Err(e) => format!("exec error: {e}"),
+            }
+        }
+        "git_status" => {
+            let out = run_cmd(&cwd, "git", &["status", "--short", "-b"]);
+            if out.is_empty() { "clean working tree".to_string() } else { out }
+        }
+        "git_diff" => {
+            let args: serde_json::Value = serde_json::from_str(&tc.arguments).unwrap_or_default();
+            let path = args["path"].as_str().unwrap_or("");
+            if path.is_empty() { run_cmd(&cwd, "git", &["diff"]) }
+            else { run_cmd(&cwd, "git", &["diff", "--", path]) }
+        }
+        "git_log" => {
+            let args: serde_json::Value = serde_json::from_str(&tc.arguments).unwrap_or_default();
+            let count = args["count"].as_u64().unwrap_or(10).to_string();
+            run_cmd(&cwd, "git", &["log", "--oneline", &format!("-{count}")])
+        }
+        "web_search" => {
+            let args: serde_json::Value = serde_json::from_str(&tc.arguments).unwrap_or_default();
+            let query = args["query"].as_str().unwrap_or("");
+            if query.is_empty() { return "no query".to_string(); }
+            // Use DuckDuckGo's lite HTML API
+            let client = reqwest::blocking::Client::builder()
+                .timeout(std::time::Duration::from_secs(10))
+                .build().ok();
+            match client {
+                Some(c) => {
+                    match c.get("https://lite.duckduckgo.com/lite/")
+                        .query(&[("q", query)])
+                        .header("User-Agent", "dscode/0.1")
+                        .send()
+                    {
+                        Ok(resp) => {
+                            let html = resp.text().unwrap_or_default();
+                            // Simple extraction: find result links
+                            let mut results = Vec::new();
+                            for line in html.lines() {
+                                if line.contains("<a rel=\"nofollow\" href=\"") {
+                                    if let Some(href_start) = line.find("href=\"") {
+                                        let rest = &line[href_start + 6..];
+                                        if let Some(href_end) = rest.find('\"') {
+                                            let url = &rest[..href_end];
+                                            // Find text after the link
+                                            let text = rest[href_end..].trim();
+                                            results.push(format!("  {url}"));
+                                        }
+                                    }
+                                }
+                            }
+                            if results.is_empty() { format!("no results for '{query}'") }
+                            else { format!("web search results for '{query}':\n{}", results.join("\n")) }
+                        }
+                        Err(e) => format!("search failed: {e}"),
+                    }
+                }
+                None => "search unavailable (client error)".to_string(),
+            }
+        }
+        "fetch_url" => {
+            let url = tc.arguments.trim_matches('"');
+            if url.is_empty() { return "no url".to_string(); }
+            let client = reqwest::blocking::Client::builder()
+                .timeout(std::time::Duration::from_secs(15))
+                .build().ok();
+            match client {
+                Some(c) => {
+                    match c.get(url).header("User-Agent", "dscode/0.1").send() {
+                        Ok(resp) => {
+                            let status = resp.status();
+                            let body = resp.text().unwrap_or_default();
+                            let max_len = 8000;
+                            let body = if body.len() > max_len {
+                                format!("{}... (truncated, {} total)", &body[..max_len], body.len())
+                            } else { body };
+                            format!("HTTP {status}\n\n{body}")
+                        }
+                        Err(e) => format!("fetch failed: {e}"),
+                    }
+                }
+                None => "fetch unavailable".to_string(),
             }
         }
         "search_code" => {
@@ -455,6 +599,22 @@ pub async fn call_stream(
     println!();
     let final_calls: Vec<ToolCall> = tool_calls.into_values().filter(|t| !t.name.is_empty()).collect();
     Ok(StreamResult { content: full, tool_calls: final_calls, usage })
+}
+
+/// Helper: run a command and return stdout+stderr as string
+fn run_cmd(cwd: &std::path::Path, program: &str, args: &[&str]) -> String {
+    match std::process::Command::new(program).args(args).current_dir(cwd).output() {
+        Ok(o) => {
+            let mut out = String::new();
+            if !o.stdout.is_empty() { out.push_str(&String::from_utf8_lossy(&o.stdout)); }
+            if !o.stderr.is_empty() {
+                if !out.is_empty() { out.push('\n'); }
+                out.push_str(&String::from_utf8_lossy(&o.stderr));
+            }
+            out.trim().to_string()
+        }
+        Err(e) => format!("error: {e}"),
+    }
 }
 
 /// Non-streaming call (no tool support needed for now, but returns content)
