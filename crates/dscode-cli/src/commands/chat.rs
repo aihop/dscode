@@ -457,7 +457,7 @@ fn load_agent_md() -> Option<String> {
                 if let Ok(content) = std::fs::read_to_string(&path) {
                     let trimmed = content.trim();
                     if !trimmed.is_empty() {
-                        return Some(format!("Project rules from {}:\n{}", name, trimmed));
+                        return Some(format!("Project context from {}:\n{}", name, trimmed));
                     }
                 }
             }
