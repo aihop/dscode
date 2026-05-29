@@ -223,12 +223,27 @@ pub fn tool_definitions() -> Vec<Value> {
                 "type": "function",
                 "function": {
                     "name": cfg.spec.name,
-                    "description": cfg.spec.input_schema,
+                    "description": tool_description(&cfg.spec.name),
                     "parameters": cfg.spec.input_schema,
                 }
             })
         })
         .collect()
+}
+
+/// Human-readable descriptions for each tool (DeepSeek API requires string).
+fn tool_description(name: &str) -> &'static str {
+    match name {
+        "read_file"   => "Read the contents of a file. Path relative to project root.",
+        "write_file"  => "Create or overwrite a file with content. Creates parent dirs if needed.",
+        "edit_file"   => "Replace text in an existing file by searching for old text and replacing it.",
+        "run_shell"   => "Execute a shell command in the project root directory. Blocks destructive commands.",
+        "search_code" => "Search for a regex pattern in project files (grep). Returns matches with file names.",
+        "list_files"  => "List files and directories in a given path.",
+        "web_search"  => "Search the web using DuckDuckGo and return results.",
+        "fetch_url"   => "Fetch a URL via HTTP GET and return its content (max 10s timeout).",
+        _             => "Run a tool by name",
+    }
 }
 
 /// Execute a tool call from the API response.
