@@ -70,6 +70,14 @@ impl ToolHandler for DscHandler {
             "git_push" => exec_git_push(&self.ctx, &args),
             "review" => exec_review(&self.ctx, &args).await,
             "fim_edit" => exec_fim_edit(&self.ctx, &args).await,
+            "agent_open" => exec_agent_open(&self.ctx, &args).await,
+            "agent_eval" => exec_agent_eval(&args).await,
+            "agent_close" => exec_agent_close(&args).await,
+            "checklist_write" => exec_checklist_write(&args),
+            "checklist_add" => exec_checklist_add(&args),
+            "checklist_update" => exec_checklist_update(&args),
+            "checklist_list" => exec_checklist_list(),
+            "test_runner" => exec_test_runner(&self.ctx, &args).await,
             _ => format!("unknown tool: {}", invocation.tool_name),
         };
 
@@ -343,6 +351,85 @@ fn tool_specs() -> Vec<ToolSpec> {
             supports_parallel_tool_calls: false,
             timeout_ms: Some(30_000),
         },
+        ToolSpec {
+            name: "agent_open".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "prompt": {"type": "string", "description": "Task description for the sub-agent"},
+                    "name": {"type": "string", "description": "Optional session name"}
+                },
+                "required": ["prompt"]
+            }),
+            output_schema: json!({}), supports_parallel_tool_calls: true, timeout_ms: Some(10_000),
+        },
+        ToolSpec {
+            name: "agent_eval".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "agent_id": {"type": "string", "description": "Agent id from agent_open"}
+                },
+                "required": ["agent_id"]
+            }),
+            output_schema: json!({}), supports_parallel_tool_calls: true, timeout_ms: Some(10_000),
+        },
+        ToolSpec {
+            name: "agent_close".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "agent_id": {"type": "string", "description": "Agent id from agent_open"}
+                },
+                "required": ["agent_id"]
+            }),
+            output_schema: json!({}), supports_parallel_tool_calls: false, timeout_ms: Some(10_000),
+        },
+        ToolSpec {
+            name: "checklist_write".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "todos": {"type": "array", "items": {"type": "object", "properties": {
+                        "content": {"type": "string"}, "status": {"type": "string", "enum": ["pending", "in_progress", "completed"]}
+                    }, "required": ["content", "status"]}}
+                },
+                "required": ["todos"]
+            }),
+            output_schema: json!({}), supports_parallel_tool_calls: false, timeout_ms: Some(10_000),
+        },
+        ToolSpec {
+            name: "checklist_add".into(),
+            input_schema: json!({
+                "type": "object", "properties": {
+                    "content": {"type": "string"}, "status": {"type": "string", "enum": ["pending", "in_progress", "completed"]}
+                }, "required": ["content"]
+            }),
+            output_schema: json!({}), supports_parallel_tool_calls: false, timeout_ms: Some(10_000),
+        },
+        ToolSpec {
+            name: "checklist_update".into(),
+            input_schema: json!({
+                "type": "object", "properties": {
+                    "id": {"type": "integer"}, "status": {"type": "string", "enum": ["pending", "in_progress", "completed"]}
+                }, "required": ["id", "status"]
+            }),
+            output_schema: json!({}), supports_parallel_tool_calls: false, timeout_ms: Some(10_000),
+        },
+        ToolSpec {
+            name: "checklist_list".into(),
+            input_schema: json!({}), output_schema: json!({}),
+            supports_parallel_tool_calls: true, timeout_ms: Some(5_000),
+        },
+        ToolSpec {
+            name: "test_runner".into(),
+            input_schema: json!({
+                "type": "object", "properties": {
+                    "command": {"type": "string", "description": "Test command to run (default: cargo test)"}
+                }
+            }),
+            output_schema: json!({}), supports_parallel_tool_calls: false, timeout_ms: Some(120_000),
+        },
     ]
 }
 
@@ -418,6 +505,14 @@ fn tool_description(name: &str) -> &'static str {
         "git_push"    => "Push commits to remote repository.",
         "review"      => "Review code for issues, bugs, and improvements. Target a file, 'diff', or 'staged'.",
         "fim_edit"    => "Fill-in-the-Middle edit: replace content between two anchors via DeepSeek FIM API.",
+        "agent_open"  => "Spawn a sub-agent to work on a task in the background. Returns an agent_id.",
+        "agent_eval"  => "Check status and get results from a sub-agent by agent_id.",
+        "agent_close" => "Close a sub-agent and return its final result.",
+        "checklist_write" => "Create or replace a task checklist with items and statuses.",
+        "checklist_add"   => "Add one item to the checklist.",
+        "checklist_update" => "Update an item's status by id (pending/in_progress/completed).",
+        "checklist_list"  => "List all checklist items with their current status.",
+        "test_runner" => "Run tests (default: cargo test) and return structured results.",
         _             => "Run a tool by name",
     }
 }
@@ -1053,6 +1148,208 @@ async fn exec_fim_edit(ctx: &ToolCtx, args: &str) -> String {
             }
         }
         Err(e) => format!("FIM API error: {e}"),
+    }
+}
+
+// ── Sub-agent system ────────────────────────────────────────────
+
+use std::collections::HashMap;
+use std::sync::Mutex;
+use chrono::Utc;
+use uuid::Uuid;
+
+#[derive(Clone)]
+struct SubAgentState {
+    status: String,
+    result: String,
+    created_at: i64,
+}
+
+fn global_agents() -> &'static Arc<Mutex<HashMap<String, SubAgentState>>> {
+    static AGENTS: OnceLock<Arc<Mutex<HashMap<String, SubAgentState>>>> = OnceLock::new();
+    AGENTS.get_or_init(|| Arc::new(Mutex::new(HashMap::new())))
+}
+
+async fn run_sub_agent(api_key: &str, base_url: &str, _cwd: &std::path::Path, prompt: &str) -> String {
+    let client = reqwest::Client::new();
+    let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
+    let mut api_msgs: Vec<Value> = vec![json!({"role": "user", "content": prompt})];
+
+    for _ in 0..8 {
+        let mut body = json!({
+            "model": "deepseek-v4-flash",
+            "messages": api_msgs,
+            "max_tokens": 4096,
+            "stream": false,
+        });
+        let tools = crate::api::tool_definitions();
+        if !tools.is_empty() { body["tools"] = Value::Array(tools); }
+
+        let resp = match client.post(&url).header("Authorization", format!("Bearer {api_key}")).json(&body).send().await {
+            Ok(r) => r, Err(e) => return format!("error: {e}"),
+        };
+        let data: Value = match resp.json().await { Ok(d) => d, Err(_) => return "parse error".to_string() };
+        let msg = &data["choices"][0]["message"];
+        let content = msg["content"].as_str().unwrap_or("").to_string();
+        let tool_calls = msg["tool_calls"].as_array().cloned().unwrap_or_default();
+
+        if tool_calls.is_empty() { return if content.is_empty() { "(empty)".to_string() } else { content }; }
+
+        let mut assistant = json!({"role": "assistant", "content": content});
+        assistant["tool_calls"] = Value::Array(tool_calls.clone());
+        api_msgs.push(assistant);
+
+        for tc in &tool_calls {
+            let name = tc["function"]["name"].as_str().unwrap_or("");
+            let arguments = tc["function"]["arguments"].as_str().unwrap_or("{}");
+            let tool_call = crate::api::ToolCall {
+                id: tc["id"].as_str().unwrap_or("").to_string(),
+                name: name.to_string(),
+                arguments: arguments.to_string(),
+            };
+            let mut result = crate::api::execute_tool(&tool_call).await;
+            if result.len() > 4000 { result = format!("{}... (truncated)", &result[..4000]); }
+            api_msgs.push(json!({"role": "tool", "tool_call_id": tool_call.id, "content": result}));
+        }
+    }
+    "max rounds reached".to_string()
+}
+
+async fn exec_agent_open(ctx: &ToolCtx, args: &str) -> String {
+    let v: Value = serde_json::from_str(args).unwrap_or_default();
+    let prompt = v["prompt"].as_str().unwrap_or("");
+    if prompt.is_empty() { return "error: no prompt".to_string(); }
+    let Some(api_key) = resolve_api_key() else { return "error: no API key".to_string() };
+    let base_url = resolve_base_url();
+
+    let agent_id = format!("agent-{}", Uuid::new_v4());
+    let agents = global_agents().clone();
+    let cwd = ctx.cwd.clone();
+    let pk = api_key.clone();
+    let bu = base_url.clone();
+    let pr = prompt.to_string();
+
+    agents.lock().unwrap().insert(agent_id.clone(), SubAgentState {
+        status: "running".into(), result: String::new(), created_at: Utc::now().timestamp(),
+    });
+
+    let id = agent_id.clone();
+    tokio::spawn(async move {
+        let result = run_sub_agent(&pk, &bu, &cwd, &pr).await;
+        if let Some(state) = agents.lock().unwrap().get_mut(&id) {
+            state.status = if result.starts_with("error:") { "failed".into() } else { "completed".into() };
+            state.result = result;
+        }
+    });
+    agent_id
+}
+
+async fn exec_agent_eval(args: &str) -> String {
+    let v: Value = serde_json::from_str(args).unwrap_or_default();
+    let id = v["agent_id"].as_str().unwrap_or("");
+    let agents = global_agents().lock().unwrap();
+    match agents.get(id) {
+        Some(s) => json!({"status": s.status, "result": s.result, "created_at": s.created_at}).to_string(),
+        None => "not found".to_string(),
+    }
+}
+
+async fn exec_agent_close(args: &str) -> String {
+    let v: Value = serde_json::from_str(args).unwrap_or_default();
+    let id = v["agent_id"].as_str().unwrap_or("");
+    let mut agents = global_agents().lock().unwrap();
+    match agents.remove(id) {
+        Some(s) => json!({"status": s.status, "result": s.result}).to_string(),
+        None => "not found".to_string(),
+    }
+}
+
+// ── Checklist ─────────────────────────────────────────────────
+
+#[derive(Clone)]
+struct ChecklistItem {
+    id: usize,
+    content: String,
+    status: String,
+}
+
+fn global_checklist() -> &'static Arc<Mutex<(usize, Vec<ChecklistItem>)>> {
+    static LIST: OnceLock<Arc<Mutex<(usize, Vec<ChecklistItem>)>>> = OnceLock::new();
+    LIST.get_or_init(|| Arc::new(Mutex::new((0, Vec::new()))))
+}
+
+fn exec_checklist_write(args: &str) -> String {
+    let v: Value = serde_json::from_str(args).unwrap_or_default();
+    let todos = v["todos"].as_array().cloned().unwrap_or_default();
+    let mut list = global_checklist().lock().unwrap();
+    let mut next_id = list.0;
+    let items: Vec<ChecklistItem> = todos.iter().map(|t| {
+        let id = next_id; next_id += 1;
+        ChecklistItem {
+            id,
+            content: t["content"].as_str().unwrap_or("").to_string(),
+            status: t["status"].as_str().unwrap_or("pending").to_string(),
+        }
+    }).collect();
+    list.0 = next_id;
+    list.1 = items;
+    format!("checklist set ({} items)", list.1.len())
+}
+
+fn exec_checklist_add(args: &str) -> String {
+    let v: Value = serde_json::from_str(args).unwrap_or_default();
+    let content = v["content"].as_str().unwrap_or("");
+    if content.is_empty() { return "error: no content".to_string(); }
+    let status = v["status"].as_str().unwrap_or("pending").to_string();
+    let mut list = global_checklist().lock().unwrap();
+    let item = ChecklistItem { id: list.0, content: content.to_string(), status };
+    list.0 += 1;
+    list.1.push(item);
+    format!("added item {}", list.0 - 1)
+}
+
+fn exec_checklist_update(args: &str) -> String {
+    let v: Value = serde_json::from_str(args).unwrap_or_default();
+    let id = v["id"].as_u64().unwrap_or(u64::MAX) as usize;
+    let status = v["status"].as_str().unwrap_or("");
+    if status.is_empty() { return "error: no status".to_string(); }
+    let mut list = global_checklist().lock().unwrap();
+    for item in &mut list.1 {
+        if item.id == id { item.status = status.to_string(); return format!("item {id} → {status}"); }
+    }
+    format!("item {id} not found")
+}
+
+fn exec_checklist_list() -> String {
+    let list = global_checklist().lock().unwrap();
+    if list.1.is_empty() { return "checklist is empty".to_string(); }
+    let lines: Vec<String> = list.1.iter().map(|i| format!("  {} [{}] {}", i.id, i.status, i.content)).collect();
+    format!("Checklist ({} items):\n{}", list.1.len(), lines.join("\n"))
+}
+
+// ── Test runner ───────────────────────────────────────────────
+
+async fn exec_test_runner(ctx: &ToolCtx, args: &str) -> String {
+    let v: Value = serde_json::from_str(args).unwrap_or_default();
+    let cmd = v["command"].as_str().unwrap_or("cargo test").to_string();
+    let cwd = ctx.cwd.clone();
+    let cmd2 = cmd.clone();
+    let output = tokio::task::spawn_blocking(move || {
+        std::process::Command::new("sh").args(["-c", &cmd2]).current_dir(&cwd).output()
+    }).await;
+
+    match output {
+        Ok(Ok(o)) => {
+            let stdout = String::from_utf8_lossy(&o.stdout);
+            let stderr = String::from_utf8_lossy(&o.stderr);
+            let mut result = String::new();
+            if !o.status.success() { result.push_str("exit code: "); result.push_str(&o.status.code().unwrap_or(-1).to_string()); result.push('\n'); }
+            if !stdout.is_empty() { result.push_str(&stdout); }
+            if !stderr.is_empty() { if !result.is_empty() { result.push('\n'); } result.push_str(&stderr); }
+            if result.len() > 16000 { result = format!("{}... (truncated, {} total)", &result[..16000], result.len()); }
+            result
+        }
+        _ => format!("failed to run '{cmd}'"),
     }
 }
 
