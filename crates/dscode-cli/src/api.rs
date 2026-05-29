@@ -62,6 +62,23 @@ fn config_path() -> PathBuf {
     dirs::config_dir().unwrap_or_else(|| PathBuf::from("~/.config")).join("dscode").join("config.toml")
 }
 
+/// Ensure a default config exists. Creates one on first run.
+pub fn ensure_default_config() {
+    let path = config_path();
+    if path.exists() { return; }
+    if let Some(parent) = path.parent() { std::fs::create_dir_all(parent).ok(); }
+    let mut store = match codewhale_config::ConfigStore::load(Some(path.clone())) {
+        Ok(s) => s,
+        Err(_) => codewhale_config::ConfigStore::load(Some(path.clone()))
+            .expect(" config should load"),
+    };
+    store.config.providers.deepseek.model = Some("deepseek-v4-flash".to_string());
+    store.config.providers.deepseek.base_url = Some("https://api.deepseek.com/beta".to_string());
+    if let Err(e) = store.save() {
+        eprintln!("warning: failed to create default config: {e}");
+    }
+}
+
 // ── Types ─────────────────────────────────────────────────────
 
 #[derive(Debug, Default)]
