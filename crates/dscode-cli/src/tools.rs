@@ -651,7 +651,14 @@ fn exec_write_file(ctx: &ToolCtx, args: &str) -> String {
         std::fs::create_dir_all(parent).ok();
     }
     match std::fs::write(&full_path, content) {
-        Ok(_) => format!("written {} ({} bytes)", full_path.display(), content.len()),
+        Ok(_) => {
+            let diff = diff_preview(ctx, path_str);
+            if !diff.is_empty() {
+                format!("written {} ({} bytes)\n{}", full_path.display(), content.len(), diff)
+            } else {
+                format!("written {} ({} bytes)", full_path.display(), content.len())
+            }
+        }
         Err(e) => format!("error writing {}: {e}", full_path.display()),
     }
 }
@@ -661,25 +668,79 @@ fn exec_edit_file(ctx: &ToolCtx, args: &str) -> String {
     let path_str = v["path"].as_str().unwrap_or("");
     let old = v["old"].as_str().unwrap_or("");
     let new = v["new"].as_str().unwrap_or("");
+    let line_hint = v["line"].as_u64();
     if path_str.is_empty() {
         return "error: no path".to_string();
     }
     let full_path = cwd_join(ctx, path_str);
     match std::fs::read_to_string(&full_path) {
         Ok(content) => {
-            match content.find(old) {
-                None => return format!("error: exact match not found in {}", full_path.display()),
-                Some(pos) => {
-                    // Reject ambiguous edits: old text must appear exactly once
-                    if content[pos + old.len()..].find(old).is_some() {
-                        return format!("error: '{}' appears multiple times — include more context lines to make the edit unambiguous", old);
+            let lines: Vec<&str> = content.lines().collect();
+
+            // Determine search range: if line hint given, only search near that line
+            let search_start = match line_hint {
+                Some(ln) if ln > 0 && ln as usize <= lines.len() => {
+                    // Search from (line-2) to (line+1) for context
+                    let start_idx = (ln as usize).saturating_sub(2);
+                    let end_idx = (ln as usize + 1).min(lines.len());
+                    // Build the window
+                    let window = lines[start_idx..end_idx].join("\n");
+                    match content.find(&window) {
+                        Some(pos) => {
+                            // Found the window, search for old within it
+                            let window_end = pos + window.len();
+                            match content[pos..window_end].find(old) {
+                                Some(rel) => Some(pos + rel),
+                                None => {
+                                    // Line hint given but exact match not in that area
+                                    // Fall through to full search
+                                    content.find(old)
+                                }
+                            }
+                        }
+                        None => content.find(old),
                     }
                 }
-            }
-            let new_content = content.replace(old, new);
-            match std::fs::write(&full_path, &new_content) {
-                Ok(_) => format!("edited {}", full_path.display()),
-                Err(e) => format!("error writing {}: {e}", full_path.display()),
+                _ => content.find(old),
+            };
+
+            match search_start {
+                None => {
+                    // Failure: return context to help the model self-correct
+                    let snippet = if let Some(ln) = line_hint {
+                        let idx = (ln as usize).saturating_sub(1).min(lines.len().saturating_sub(1));
+                        let start = idx.saturating_sub(3);
+                        let end = (idx + 3).min(lines.len());
+                        let snip: Vec<String> = lines[start..end].iter().enumerate().map(|(i, l)| {
+                            format!("{:>6}  {}", start + i + 1, l)
+                        }).collect();
+                        format!(" near line {}. Lines around it:\n{}", ln, snip.join("\n"))
+                    } else if let Some(ln) = line_hint {
+                        format!(" near line {}", ln)
+                    } else {
+                        String::new()
+                    };
+                    format!("error: exact match not found in {}{}", full_path.display(), snippet)
+                }
+                Some(pos) => {
+                    // Check uniqueness within the whole file
+                    if content[pos + old.len()..].find(old).is_some() {
+                        return format!("error: '{}' appears multiple times — include more context lines (add a `line` hint or include surrounding code)", old);
+                    }
+                    let new_content = content.replace(old, new);
+                    match std::fs::write(&full_path, &new_content) {
+                        Ok(_) => {
+                            // Show diff for preview
+                            let diff = diff_preview(ctx, path_str);
+                            if !diff.is_empty() {
+                                format!("edited {}\n{}", full_path.display(), diff)
+                            } else {
+                                format!("edited {}", full_path.display())
+                            }
+                        }
+                        Err(e) => format!("error writing {}: {e}", full_path.display()),
+                    }
+                }
             }
         }
         Err(e) => format!("error reading {}: {e}", full_path.display()),
@@ -1382,6 +1443,23 @@ async fn exec_test_runner(ctx: &ToolCtx, args: &str) -> String {
             result
         }
         _ => format!("failed to run '{cmd}'"),
+    }
+}
+
+// ── Diff preview helper ────────────────────────────────────────
+
+/// Run git diff on a file and return the diff text (empty if unchanged or not a git repo).
+fn diff_preview(ctx: &ToolCtx, path_str: &str) -> String {
+    let output = std::process::Command::new("git")
+        .args(["diff", "--", path_str])
+        .current_dir(&ctx.cwd)
+        .output();
+    match output {
+        Ok(o) if o.status.success() => {
+            let out = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            if out.is_empty() { String::new() } else { out }
+        }
+        _ => String::new(),
     }
 }
 
