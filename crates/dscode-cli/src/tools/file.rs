@@ -409,7 +409,7 @@ pub(crate) fn exec_list_tree(ctx: &ToolCtx, args: &str) -> String {
 
 // ── Diff preview helper ───────────────────────────────────────
 
-fn diff_preview(ctx: &ToolCtx, path_str: &str) -> String {
+pub(crate) fn diff_preview(ctx: &ToolCtx, path_str: &str) -> String {
     let output = std::process::Command::new("git")
         .args(["diff", "--", path_str])
         .current_dir(&ctx.cwd)
