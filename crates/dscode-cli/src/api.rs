@@ -116,7 +116,7 @@ pub async fn call_stream(
         "model": model,
         "messages": messages,
         "stream": true,
-        "max_tokens": 16384,
+        "max_tokens": 65536,
     });
     if let Some(t) = tools {
         if !t.is_empty() {
@@ -755,7 +755,7 @@ pub async fn call_nonstream(
 ) -> Result<(String, UsageInfo), String> {
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
     let body = serde_json::json!({
-        "model": model, "messages": messages, "stream": false, "max_tokens": 16384,
+        "model": model, "messages": messages, "stream": false, "max_tokens": 65536,
     });
     let response = client.post(&url)
         .header("Authorization", format!("Bearer {api_key}"))
