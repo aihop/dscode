@@ -68,6 +68,8 @@ impl ToolHandler for DscHandler {
             "git_add" => exec_git_add(&self.ctx, &args),
             "git_commit" => exec_git_commit(&self.ctx, &args),
             "git_push" => exec_git_push(&self.ctx, &args),
+            "review" => exec_review(&self.ctx, &args).await,
+            "fim_edit" => exec_fim_edit(&self.ctx, &args).await,
             _ => format!("unknown tool: {}", invocation.tool_name),
         };
 
@@ -311,6 +313,36 @@ fn tool_specs() -> Vec<ToolSpec> {
             supports_parallel_tool_calls: false,
             timeout_ms: Some(30_000),
         },
+        ToolSpec {
+            name: "review".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "target": {"type": "string", "description": "File path, 'diff' for working tree, or 'staged' for staged changes"},
+                    "kind": {"type": "string", "description": "Optional: 'file', 'diff', or 'staged' (auto-detected from target)"}
+                },
+                "required": ["target"]
+            }),
+            output_schema: json!({}),
+            supports_parallel_tool_calls: false,
+            timeout_ms: Some(60_000),
+        },
+        ToolSpec {
+            name: "fim_edit".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "File path to edit"},
+                    "prefix_anchor": {"type": "string", "description": "Text marking the end of the prefix (kept as-is)"},
+                    "suffix_anchor": {"type": "string", "description": "Text marking the start of the suffix (kept as-is)"},
+                    "max_tokens": {"type": "integer", "description": "Max tokens for generated middle (default 512)"}
+                },
+                "required": ["path", "prefix_anchor", "suffix_anchor"]
+            }),
+            output_schema: json!({}),
+            supports_parallel_tool_calls: false,
+            timeout_ms: Some(30_000),
+        },
     ]
 }
 
@@ -384,6 +416,8 @@ fn tool_description(name: &str) -> &'static str {
         "git_add"     => "Stage file(s) for commit. Path can be a file or glob pattern.",
         "git_commit"  => "Create a commit with a message. Requires prior git_add.",
         "git_push"    => "Push commits to remote repository.",
+        "review"      => "Review code for issues, bugs, and improvements. Target a file, 'diff', or 'staged'.",
+        "fim_edit"    => "Fill-in-the-Middle edit: replace content between two anchors via DeepSeek FIM API.",
         _             => "Run a tool by name",
     }
 }
@@ -919,6 +953,106 @@ fn exec_git_push(ctx: &ToolCtx, args: &str) -> String {
         }
         Ok(o) => format!("push failed: {}", String::from_utf8_lossy(&o.stderr)),
         Err(e) => format!("push error: {e}"),
+    }
+}
+
+// ── Review tool (calls DeepSeek API for structured code review) ─
+
+use crate::api::{resolve_api_key, resolve_base_url};
+
+async fn exec_review(ctx: &ToolCtx, args: &str) -> String {
+    let v: Value = serde_json::from_str(args).unwrap_or_default();
+    let target = v["target"].as_str().unwrap_or("");
+    if target.is_empty() { return "error: no target provided".to_string(); }
+
+    // Read target content
+    let code = if target == "diff" {
+        let o = std::process::Command::new("git").args(["diff"]).current_dir(&ctx.cwd).output();
+        match o { Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).to_string(), _ => return "no diff".to_string() }
+    } else if target == "staged" {
+        let o = std::process::Command::new("git").args(["diff", "--cached"]).current_dir(&ctx.cwd).output();
+        match o { Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).to_string(), _ => return "no staged changes".to_string() }
+    } else {
+        let full = if target.starts_with('/') { std::path::PathBuf::from(target) } else { ctx.cwd.join(target) };
+        match std::fs::read_to_string(&full) { Ok(c) => c, Err(e) => return format!("error reading {target}: {e}") }
+    };
+    if code.is_empty() { return "nothing to review".to_string(); }
+    let code = if code.len() > 32_000 { format!("{}... (truncated)", &code[..32_000]) } else { code };
+
+    // Call DeepSeek API for review
+    let Some(api_key) = resolve_api_key() else { return "error: no API key".to_string() };
+    let base_url = resolve_base_url();
+    let client = reqwest::Client::new();
+    let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
+    let body = serde_json::json!({
+        "model": "deepseek-v4-flash",
+        "messages": [
+            {"role": "system", "content": "You are a senior code reviewer. Return a concise review with: summary, issues (severity/title/description), and suggestions. Be direct and actionable."},
+            {"role": "user", "content": format!("Review this code:\n```\n{}```", code)}
+        ],
+        "max_tokens": 2048,
+        "stream": false,
+    });
+    match client.post(&url).header("Authorization", format!("Bearer {api_key}")).json(&body).send().await {
+        Ok(resp) => {
+            let data: Value = resp.json().await.unwrap_or_default();
+            data["choices"][0]["message"]["content"].as_str().unwrap_or("(no response)").to_string()
+        }
+        Err(e) => format!("review API error: {e}"),
+    }
+}
+
+// ── FIM edit tool (calls DeepSeek /beta/completions) ───────────
+
+async fn exec_fim_edit(ctx: &ToolCtx, args: &str) -> String {
+    let v: Value = serde_json::from_str(args).unwrap_or_default();
+    let path = v["path"].as_str().unwrap_or("");
+    let prefix_anchor = v["prefix_anchor"].as_str().unwrap_or("");
+    let suffix_anchor = v["suffix_anchor"].as_str().unwrap_or("");
+    let max_tokens = v["max_tokens"].as_u64().unwrap_or(512).min(2048);
+    if path.is_empty() || prefix_anchor.is_empty() || suffix_anchor.is_empty() {
+        return "error: path, prefix_anchor, and suffix_anchor are required".to_string();
+    }
+
+    let full_path = if path.starts_with('/') { std::path::PathBuf::from(path) } else { ctx.cwd.join(path) };
+    let content = match std::fs::read_to_string(&full_path) { Ok(c) => c, Err(e) => return format!("error reading {path}: {e}") };
+
+    // Find anchors
+    let pa_start = match content.find(prefix_anchor) { Some(p) => p, None => return format!("prefix_anchor not found in {path}") };
+    let sa_start = match content[pa_start + 1..].find(suffix_anchor) { Some(p) => pa_start + 1 + p, None => return format!("suffix_anchor not found after prefix_anchor in {path}") };
+    if sa_start <= pa_start + prefix_anchor.len() {
+        return "error: suffix_anchor overlaps with prefix_anchor".to_string();
+    }
+
+    let prompt = &content[..pa_start + prefix_anchor.len()];
+    let suffix = &content[sa_start..];
+
+    // Call DeepSeek FIM API
+    let Some(api_key) = resolve_api_key() else { return "error: no API key".to_string() };
+    let base_url = resolve_base_url();
+    let client = reqwest::Client::new();
+    let url = format!("{}/completions", base_url.trim_end_matches('/'));
+    let body = serde_json::json!({
+        "model": "deepseek-v4-flash",
+        "prompt": prompt,
+        "suffix": suffix,
+        "max_tokens": max_tokens,
+    });
+    match client.post(&url).header("Authorization", format!("Bearer {api_key}")).json(&body).send().await {
+        Ok(resp) => {
+            let data: Value = resp.json().await.unwrap_or_default();
+            let generated = data["choices"][0]["text"].as_str().unwrap_or("").to_string();
+            if generated.is_empty() {
+                return "FIM generated empty content".to_string();
+            }
+            // Reassemble: prefix (up to anchor end) + generated + suffix (from anchor start)
+            let new_content = format!("{}{}{}", &content[..pa_start + prefix_anchor.len()], generated, &content[sa_start..]);
+            match std::fs::write(&full_path, &new_content) {
+                Ok(_) => format!("fim_edit applied to {} ({} chars generated)", path, generated.len()),
+                Err(e) => format!("error writing {path}: {e}"),
+            }
+        }
+        Err(e) => format!("FIM API error: {e}"),
     }
 }
 

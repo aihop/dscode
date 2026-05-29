@@ -122,7 +122,7 @@ dscode session delete abc12345
 
 ## Agent Tools
 
-dscode includes 17 built-in tools for autonomous code work:
+dscode includes 19 built-in tools for autonomous code work:
 
 ```
 read_file      Read file contents
@@ -142,6 +142,8 @@ git_diff       Show working tree diff (unstaged or staged)
 git_add        Stage files for commit
 git_commit     Create a commit with a message
 git_push       Push commits to remote repository
+review         Code review (file, diff, or staged changes)
+fim_edit       Fill-in-the-Middle edit via DeepSeek FIM API
 ```
 
 List them anytime: `dscode tools list`
