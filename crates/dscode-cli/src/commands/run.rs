@@ -68,7 +68,7 @@ pub async fn run(args: &RunArgs) {
         model,
         system_prompt: sys_content,
         tools: tools_list,
-        max_rounds: 10,
+        max_rounds: 25,
         narrow,
         silent: false,
         terminal_width: tw,

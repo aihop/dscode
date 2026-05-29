@@ -48,9 +48,7 @@ impl AgentEngine {
         loop {
             round += 1;
             if round > options.max_rounds {
-                if options.narrow {
-                    eprintln!("\x1B[33m─ max rounds reached ({})\x1B[0m", options.max_rounds);
-                }
+                eprintln!("\x1B[33m─ max rounds reached ({})\x1B[0m", options.max_rounds);
                 break;
             }
 

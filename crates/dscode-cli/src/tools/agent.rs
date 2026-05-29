@@ -110,7 +110,14 @@ pub(crate) async fn exec_fim_edit(ctx: &ToolCtx, args: &str) -> String {
             }
             let new_content = format!("{}{}{}", &content[..pa_start + prefix_anchor.len()], generated, &content[sa_start..]);
             match std::fs::write(&full_path, &new_content) {
-                Ok(_) => format!("fim_edit applied to {path} ({} chars generated)", generated.len()),
+                Ok(_) => {
+                    let diff = crate::tools::file::diff_preview(ctx, path);
+                    if !diff.is_empty() {
+                        format!("fim_edit applied to {path} ({} chars generated)\n{}", generated.len(), diff)
+                    } else {
+                        format!("fim_edit applied to {path} ({} chars generated)", generated.len())
+                    }
+                }
                 Err(e) => format!("error writing {path}: {e}"),
             }
         }
@@ -151,7 +158,7 @@ async fn run_sub_agent(
         model: crate::api::resolve_model_name(&crate::api::default_model(false)),
         system_prompt: "You are a helpful sub-agent. Focus on the task provided.".to_string(),
         tools: Some(crate::api::tool_definitions()),
-        max_rounds: 8,
+        max_rounds: 15,
         narrow: false,
         silent: true,
         terminal_width: 80,
@@ -370,8 +377,8 @@ pub(crate) fn exec_run_shell(ctx: &ToolCtx, args: &str) -> String {
                 }
                 out.push_str(&String::from_utf8_lossy(&output.stderr));
             }
-            if out.len() > 10000 {
-                out = format!("{}... (truncated, {} total)", &out[..10000], out.len());
+            if out.len() > 40000 {
+                out = format!("{}... (truncated, {} total)", &out[..40000], out.len());
             }
             if !output.status.success() {
                 out = format!("exit code {}: {}", output.status.code().unwrap_or(-1), out);

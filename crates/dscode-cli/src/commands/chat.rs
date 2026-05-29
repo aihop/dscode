@@ -52,7 +52,7 @@ async fn compact_via_llm(
     if estimated < COMPACT_AT_TOKENS {
         return false;
     }
-    const KEEP: usize = 10;
+    const KEEP: usize = 20;
     if messages.len() <= KEEP + 2 {
         return false;
     }
@@ -75,12 +75,11 @@ async fn compact_via_llm(
 
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
     let body = serde_json::json!({
-        "model": "deepseek-v4-flash",
+        "model": "deepseek-v4-pro",
         "messages": [{"role": "user", "content": summary_prompt}],
         "max_tokens": 2048,
         "stream": false,
     });
-
     let resp = match client
         .post(&url)
         .header("Authorization", format!("Bearer {}", api_key))
@@ -91,7 +90,7 @@ async fn compact_via_llm(
     {
         Ok(r) => r,
         Err(e) => {
-            if narrow { eprintln!("\x1B[33m─ compaction request failed: {e}\x1B[0m"); }
+            eprintln!("\x1B[33m─ compaction request failed: {e}\x1B[0m");
             return false;
         }
     };
@@ -283,7 +282,7 @@ You are running directly in the project root directory. Always use relative path
             model: model.clone(),
             system_prompt: sys_content,
             tools: tools_list,
-            max_rounds: 20,
+            max_rounds: 30,
             narrow,
             silent: false,
             terminal_width: tw,
