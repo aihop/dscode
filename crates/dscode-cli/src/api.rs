@@ -151,6 +151,8 @@ pub async fn call_stream(
     let mut col: u16 = 0;
     let max_col = terminal_width.saturating_sub(2);
     let mut usage = UsageInfo::default();
+    let mut saw_done = false;
+    let mut saw_finish_reason = false;
     // Tool call accumulation (streamed deltas)
     let mut tool_calls: BTreeMap<usize, ToolCall> = BTreeMap::new();
 
@@ -159,18 +161,23 @@ pub async fn call_stream(
             Some(Ok(c)) => c,
             Some(Err(e)) => {
                 eprintln!("\x1B[33m\n[网络错误: {e}]\x1B[0m");
-                break;
+                return Err(format!("stream interrupted: {e}"));
             }
             None => break,
         };
         for line in String::from_utf8_lossy(&chunk).lines() {
             let data = match line.trim() {
-                l if l.is_empty() || l == "data: [DONE]" => continue,
+                l if l.is_empty() => continue,
+                "data: [DONE]" => {
+                    saw_done = true;
+                    continue;
+                }
                 l => match l.strip_prefix("data: ") { Some(s) => s, None => continue },
             };
             if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(data) {
                 // Finish reason (diagnose truncation)
                 if let Some(fr) = parsed["choices"][0]["finish_reason"].as_str() {
+                    saw_finish_reason = true;
                     if fr == "length" {
                         eprintln!("\x1B[33m\n[响应被 token 上限截断]\x1B[0m");
                     }
@@ -300,6 +307,14 @@ pub async fn call_stream(
                 }
             }
         }
+    }
+
+    if !saw_done {
+        return Err("stream ended before [DONE] marker".to_string());
+    }
+
+    if !saw_finish_reason && full.is_empty() && reasoning.is_empty() && tool_calls.is_empty() {
+        return Err("stream completed without any response content".to_string());
     }
 
     // Flush remaining content in line buffer

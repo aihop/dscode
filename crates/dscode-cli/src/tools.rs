@@ -130,7 +130,8 @@ fn tool_specs() -> Vec<ToolSpec> {
                 "properties": {
                     "path": {"type": "string", "description": "File path relative to project root"},
                     "old": {"type": "string", "description": "Existing text to find (exact match)"},
-                    "new": {"type": "string", "description": "Replacement text"}
+                    "new": {"type": "string", "description": "Replacement text"},
+                    "line": {"type": "integer", "description": "Optional 1-based line hint. Provide this whenever possible to disambiguate repeated code."}
                 },
                 "required": ["path", "old", "new"]
             }),
@@ -635,7 +636,7 @@ fn exec_read_file(ctx: &ToolCtx, args: &str) -> String {
             let total = lines.len();
             let start_line = v["start_line"].as_u64().unwrap_or(1).max(1) as usize - 1;
             let start_line = start_line.min(total.saturating_sub(1));
-            let max_lines = v["max_lines"].as_u64().unwrap_or(500).min(500) as usize;
+            let max_lines = v["max_lines"].as_u64().unwrap_or(500).min(2_000) as usize;
             let end_line = (start_line + max_lines).min(total);
             let truncated = end_line < total;
             let shown: Vec<&str> = lines[start_line..end_line].to_vec();
@@ -687,16 +688,19 @@ fn exec_edit_file(ctx: &ToolCtx, args: &str) -> String {
     if path_str.is_empty() {
         return "error: no path".to_string();
     }
+    if old.is_empty() {
+        return "error: no old text provided".to_string();
+    }
     let full_path = cwd_join(ctx, path_str);
     match std::fs::read_to_string(&full_path) {
         Ok(ref content) => {
             let lines: Vec<&str> = content.lines().collect();
 
             // Try exact match first, then whitespace-tolerant fuzzy match
-            let match_result = find_edit_match(&content, &lines, old, line_hint);
+            let match_result = find_edit_match(content, &lines, old, line_hint);
 
             match match_result {
-                None => {
+                Err(EditMatchError::NotFound) => {
                     // Build helpful error with context
                     let snippet = if let Some(ln) = line_hint {
                         let idx = (ln as usize).saturating_sub(1).min(lines.len().saturating_sub(1));
@@ -711,11 +715,19 @@ fn exec_edit_file(ctx: &ToolCtx, args: &str) -> String {
                     };
                     format!("error: match not found in {}{}", full_path.display(), snippet)
                 }
-                Some((pos, match_len)) => {
-                    // Check uniqueness
-                    if content[pos + match_len..].find(&content[pos..pos+match_len]).is_some() {
-                        return format!("error: matched text appears multiple times — include more context lines",);
+                Err(EditMatchError::Ambiguous(count)) => {
+                    if let Some(ln) = line_hint {
+                        format!(
+                            "error: matched text appears {count} times near line {} — include more context lines",
+                            ln
+                        )
+                    } else {
+                        format!(
+                            "error: matched text appears {count} times — include more context lines or provide a line hint"
+                        )
                     }
+                }
+                Ok((pos, match_len)) => {
                     let new_content = format!("{}{}{}", &content[..pos], new, &content[pos + match_len..]);
                     match std::fs::write(&full_path, &new_content) {
                         Ok(_) => {
@@ -737,50 +749,68 @@ fn exec_edit_file(ctx: &ToolCtx, args: &str) -> String {
 
 /// Find a match for `old` text in `content`, trying exact match first,
 /// then whitespace-tolerant line-by-line matching.
-fn find_edit_match<'a>(content: &str, lines: &[&str], old: &str, line_hint: Option<u64>) -> Option<(usize, usize)> {
-    // 1. Try exact match
-    let search_area: &str = if let Some(ln) = line_hint {
-        let idx = (ln as usize).saturating_sub(2).min(lines.len().saturating_sub(1));
-        let end = (idx + 2).min(lines.len());
-        // Build window text
-        let start_byte = lines[..idx].iter().map(|l| l.len() + 1).sum::<usize>();
-        let end_byte = lines[..end].iter().map(|l| l.len() + 1).sum::<usize>();
-        &content[start_byte..end_byte.min(content.len())]
-    } else {
-        content
-    };
+#[derive(Debug, Clone, Copy)]
+enum EditMatchError {
+    NotFound,
+    Ambiguous(usize),
+}
 
-    if let Some(rel) = search_area.find(old) {
-        let abs_pos = if let Some(ln) = line_hint {
-            let start_byte = lines[..(ln as usize).saturating_sub(2).min(lines.len().saturating_sub(1))].iter().map(|l| l.len() + 1).sum::<usize>();
-            start_byte + rel
-        } else { rel };
-        return Some((abs_pos, old.len()));
+fn find_edit_match(
+    content: &str,
+    lines: &[&str],
+    old: &str,
+    line_hint: Option<u64>,
+) -> Result<(usize, usize), EditMatchError> {
+    let exact_matches = find_exact_matches(content, old);
+    match select_edit_match(lines, &exact_matches, line_hint) {
+        Ok(m) => return Ok(m),
+        Err(EditMatchError::Ambiguous(_)) => return Err(EditMatchError::Ambiguous(exact_matches.len())),
+        Err(EditMatchError::NotFound) => {}
     }
 
-    // 2. Whitespace-tolerant: trim each line and match
+    let fuzzy_matches = find_fuzzy_matches(content, lines, old, line_hint);
+    select_edit_match(lines, &fuzzy_matches, line_hint)
+}
+
+fn find_exact_matches(content: &str, old: &str) -> Vec<(usize, usize)> {
+    content.match_indices(old).map(|(pos, s)| (pos, s.len())).collect()
+}
+
+fn find_fuzzy_matches(
+    content: &str,
+    lines: &[&str],
+    old: &str,
+    line_hint: Option<u64>,
+) -> Vec<(usize, usize)> {
     let old_lines: Vec<&str> = old.lines().map(|l| l.trim()).filter(|l| !l.is_empty()).collect();
-    if old_lines.is_empty() { return None; }
+    if old_lines.is_empty() {
+        return Vec::new();
+    }
 
     let content_trimmed: Vec<&str> = lines.iter().map(|l| l.trim()).collect();
     let line_offsets: Vec<usize> = lines.iter().scan(0usize, |acc, l| {
-        let o = *acc; *acc += l.len() + 1; Some(o)
+        let o = *acc;
+        *acc += l.len() + 1;
+        Some(o)
     }).collect();
 
-    // Determine search range within the file
     let search_lines = if let Some(ln) = line_hint {
-        let idx = (ln as usize).saturating_sub(5).min(lines.len().saturating_sub(1));
-        let end = (idx + 10).min(lines.len());
-        idx..end
+        let start = (ln as usize).saturating_sub(20).min(lines.len());
+        let end = ((ln as usize) + 20).min(lines.len());
+        start..end
     } else {
         0..lines.len()
     };
 
-    for start in search_lines.start..search_lines.end.saturating_sub(old_lines.len().saturating_sub(1)) {
+    let max_start = search_lines
+        .end
+        .saturating_sub(old_lines.len().saturating_sub(1));
+    let mut matches = Vec::new();
+
+    for start in search_lines.start..max_start {
         let mut all_match = true;
         for (i, old_line) in old_lines.iter().enumerate() {
             let file_line = content_trimmed.get(start + i).unwrap_or(&"");
-            // Trim internal whitespace differences too (multiple spaces → single)
             let old_norm: String = old_line.split_whitespace().collect::<Vec<_>>().join(" ");
             let file_norm: String = file_line.split_whitespace().collect::<Vec<_>>().join(" ");
             if old_norm != file_norm {
@@ -789,15 +819,55 @@ fn find_edit_match<'a>(content: &str, lines: &[&str], old: &str, line_hint: Opti
             }
         }
         if all_match {
-            // Calculate byte position and length of the matched region
             let byte_start = line_offsets[start];
-            let byte_end = line_offsets.get(start + old_lines.len()).copied()
+            let byte_end = line_offsets
+                .get(start + old_lines.len())
+                .copied()
                 .unwrap_or(content.len());
-            return Some((byte_start, byte_end.saturating_sub(byte_start)));
+            matches.push((byte_start, byte_end.saturating_sub(byte_start)));
         }
     }
 
-    None
+    matches
+}
+
+fn select_edit_match(
+    lines: &[&str],
+    matches: &[(usize, usize)],
+    line_hint: Option<u64>,
+) -> Result<(usize, usize), EditMatchError> {
+    match matches.len() {
+        0 => Err(EditMatchError::NotFound),
+        1 => Ok(matches[0]),
+        _ => {
+            if let Some(ln) = line_hint {
+                let line_offsets: Vec<usize> = lines.iter().scan(0usize, |acc, l| {
+                    let o = *acc;
+                    *acc += l.len() + 1;
+                    Some(o)
+                }).collect();
+                let target_line = ln as usize;
+                let best = matches
+                    .iter()
+                    .min_by_key(|(pos, _)| {
+                        let line_no = byte_offset_to_line(&line_offsets, *pos);
+                        line_no.abs_diff(target_line)
+                    })
+                    .copied()
+                    .unwrap_or(matches[0]);
+                Ok(best)
+            } else {
+                Err(EditMatchError::Ambiguous(matches.len()))
+            }
+        }
+    }
+}
+
+fn byte_offset_to_line(line_offsets: &[usize], pos: usize) -> usize {
+    match line_offsets.binary_search(&pos) {
+        Ok(idx) => idx + 1,
+        Err(idx) => idx.max(1),
+    }
 }
 
 fn exec_run_shell(ctx: &ToolCtx, args: &str) -> String {
@@ -1231,17 +1301,16 @@ async fn exec_review(ctx: &ToolCtx, args: &str) -> String {
     let base_url = resolve_base_url();
     let client = reqwest::Client::new();
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
-    let body = serde_json::json!({
-        "model": "deepseek-v4-flash",
-        "messages": [
-            {"role": "system", "content": "You are a senior code reviewer. Return a concise review with: summary, issues (severity/title/description), and suggestions. Be direct and actionable."},
-            {"role": "user", "content": format!("Review this code:\n```\n{}```", code)}
-        ],
-        "max_tokens": 8192,
-        "stream": false,
-    });
-    match client.post(&url).header("Authorization", format!("Bearer {api_key}")).json(&body).send().await {
-        Ok(resp) => {
+      let body = serde_json::json!({
+          "model": "deepseek-v4-pro",
+          "messages": [
+              {"role": "system", "content": "You are a senior code reviewer. Return a concise review with: summary, issues (severity/title/description), and suggestions. Be direct and actionable."},
+              {"role": "user", "content": format!("Review this code:\n```\n{}```", code)}
+          ],
+          "max_tokens": 8192,
+          "stream": false,
+      });
+      match client.post(&url).header("Authorization", format!("Bearer {api_key}")).json(&body).send().await {        Ok(resp) => {
             let data: Value = resp.json().await.unwrap_or_default();
             data["choices"][0]["message"]["content"].as_str().unwrap_or("(no response)").to_string()
         }
@@ -1346,7 +1415,7 @@ async fn run_sub_agent(api_key: &str, base_url: &str, _cwd: &std::path::Path, pr
 
     for _ in 0..8 {
         let mut body = json!({
-            "model": "deepseek-v4-flash",
+            "model": "deepseek-v4-pro",
             "messages": api_msgs,
             "max_tokens": 4096,
             "stream": false,

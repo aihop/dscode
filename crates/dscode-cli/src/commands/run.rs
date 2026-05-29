@@ -49,7 +49,8 @@ pub async fn run(args: &RunArgs) {
     });
     let base_url = resolve_base_url();
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(300))
+        .connect_timeout(std::time::Duration::from_secs(30))
+        .tcp_keepalive(Some(std::time::Duration::from_secs(30)))
         .build().unwrap();
 
     let narrow = terminal_width() <= 80;
