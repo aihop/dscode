@@ -30,15 +30,18 @@ impl AgentEngine {
         options: &AgentOptions,
         history: Vec<Value>,
     ) -> Result<(Vec<Value>, UsageInfo), String> {
-        let full_system = format!(
-            "{}\n\n## Environment\n- Current Working Directory: {}\n- Terminal: {}\n",
-            options.system_prompt,
-            options.cwd.display(),
-            if options.narrow { "narrow/mobile" } else { "standard" }
-        );
-        let mut api_msgs = vec![json!({"role": "system", "content": full_system})];
-        api_msgs.extend(history);
-
+          // Split into two system messages for DeepSeek prompt caching:
+          // First message is the fixed prompt (cacheable across conversations).
+          // Second message is dynamic environment info (not cacheable).
+          let mut api_msgs = vec![
+              json!({"role": "system", "content": options.system_prompt}),
+              json!({"role": "system", "content": format!(
+                  "## Environment\n- Current Working Directory: {}\n- Terminal: {}\n",
+                  options.cwd.display(),
+                  if options.narrow { "narrow/mobile" } else { "standard" }
+              )}),
+          ];
+          api_msgs.extend(history);
         let mut total_usage = UsageInfo::default();
         let mut round = 0;
 
