@@ -2,6 +2,7 @@ pub mod api;
 pub mod commands;
 pub mod render;
 pub mod tools;
+pub mod utils;
 
 use clap::{Parser, Subcommand};
 

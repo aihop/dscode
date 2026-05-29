@@ -9,6 +9,11 @@ use std::path::PathBuf;
 
 use crate::render;
 
+// ── Constants ─────────────────────────────────────────────────
+
+/// V4 has 1M context — keep tool results intact up to 120K chars by default.
+pub const MAX_TOOL_OUTPUT_CHARS: usize = 120_000;
+
 // ── Model resolution ──────────────────────────────────────────
 
 pub fn resolve_model_name(input: &str) -> String {
@@ -75,6 +80,7 @@ pub struct StreamResult {
     pub reasoning_content: String,
     pub tool_calls: Vec<ToolCall>,
     pub usage: UsageInfo,
+    pub finish_reason: Option<String>,
 }
 
 #[derive(Debug)]
@@ -153,6 +159,7 @@ pub async fn call_stream(
     let mut col: u16 = 0;
     let max_col = terminal_width.saturating_sub(2);
     let mut usage = UsageInfo::default();
+    let mut finish_reason: Option<String> = None;
     // Tool call accumulation (streamed deltas)
     let mut tool_calls: BTreeMap<usize, ToolCall> = BTreeMap::new();
 
@@ -173,8 +180,9 @@ pub async fn call_stream(
             if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(data) {
                 // Finish reason (diagnose truncation)
                 if let Some(fr) = parsed["choices"][0]["finish_reason"].as_str() {
+                    finish_reason = Some(fr.to_string());
                     if fr == "length" {
-                        eprintln!("\x1B[33m\n[响应被 token 上限截断]\x1B[0m");
+                        eprintln!("\x1B[33m\n[响应被 token 上上限截断]\x1B[0m");
                     }
                 }
                 // Exact usage + cache stats
@@ -201,14 +209,12 @@ pub async fn call_stream(
                         for ch in delta.chars() {
                             if ch == '\n' {
                                 out.push_str(&render::render_line(&line_buf, in_code_block, &code_lang));
-                                if !in_code_block {
-                                    line_buf.clear();
-                                    let trimmed = line_buf.trim();
-                                    if trimmed.starts_with("```") {
-                                        if !in_code_block { code_lang = trimmed.trim_start_matches("```").trim().to_string(); }
-                                        else { code_lang.clear(); }
-                                        in_code_block = !in_code_block;
-                                    }
+                                // Update code block status after rendering the line
+                                let trimmed = line_buf.trim();
+                                if trimmed.starts_with("```") {
+                                    if !in_code_block { code_lang = trimmed.trim_start_matches("```").trim().to_string(); }
+                                    else { code_lang.clear(); }
+                                    in_code_block = !in_code_block;
                                 }
                                 line_buf.clear();
                                 out.push_str("\r\x1B[2K");
@@ -216,9 +222,15 @@ pub async fn call_stream(
                             } else {
                                 line_buf.push(ch);
                                 col += 1;
-                                if col >= max_col && ch.is_whitespace() {
-                                    out.push_str("\n\r\x1B[2K");
-                                    col = 0;
+                                // Force wrap even without whitespace if we hit the absolute limit
+                                // but prefer wrapping at whitespace.
+                                if col >= max_col {
+                                    if ch.is_whitespace() || col >= max_col + 10 {
+                                        out.push_str(&render::render_line(&line_buf, in_code_block, &code_lang));
+                                        line_buf.clear();
+                                        out.push_str("\r\x1B[2K");
+                                        col = 0;
+                                    }
                                 }
                             }
                         }
@@ -305,6 +317,7 @@ pub async fn call_stream(
         reasoning_content: reasoning,
         tool_calls: tool_calls.into_values().collect(),
         usage,
+        finish_reason,
     })
 }
 
