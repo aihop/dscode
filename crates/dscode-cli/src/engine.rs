@@ -42,15 +42,19 @@ impl AgentEngine {
               )}),
           ];
           api_msgs.extend(history);
-        let mut total_usage = UsageInfo::default();
-        let mut round = 0;
-
+            let mut total_usage = UsageInfo::default();
+            let mut round = 0;
+            let mut max_rounds_reached = false;
+            let turn_start = std::time::Instant::now();          // Start with core tools, auto-expand to full after first tool round
+          let mut current_tools = options.tools.clone();
+          let mut expanded = false;
         loop {
             round += 1;
             if round > options.max_rounds {
                 eprintln!("\x1B[33m─ max rounds reached ({})\x1B[0m", options.max_rounds);
-                break;
-            }
+                    max_rounds_reached = true;
+                    break;
+                }
 
             let mut stream_res = api::call_stream(
                 &self.client,
@@ -58,7 +62,7 @@ impl AgentEngine {
                 &self.api_key,
                 &options.model,
                 &api_msgs,
-                options.tools.as_deref(),
+                current_tools.as_deref(),
                 options.narrow,
                 options.silent,
                 options.terminal_width,
@@ -96,7 +100,7 @@ impl AgentEngine {
                     &self.api_key,
                     &options.model,
                     &temp_msgs,
-                    options.tools.as_deref(),
+                    current_tools.as_deref(),
                     options.narrow,
                     options.silent,
                     options.terminal_width,
@@ -163,17 +167,45 @@ impl AgentEngine {
                                 for l in result.lines() { println!("\x1B[90m  {}\x1B[0m", l); }
                             }
                             println!("\x1B[90m──────────────────────────────────────\x1B[0m");
-                        }
-                    }
-                }
-                // Loop continues to let model see tool results
-            } else {
+                      }
+                      }
+                  }
+                  // Auto-expand: after first tool round, give model full tools
+                  if !expanded && options.tools.is_some() {
+                      current_tools = Some(crate::tools::tool_definitions());
+                      expanded = true;
+                      if !options.silent && !options.narrow {
+                          println!("\x1B[90m─ exp: {}→full tools\x1B[0m", crate::tools::CORE_TOOL_NAMES.len());
+                      }
+                  }
+                  // Loop continues to let model see tool results
+              } else {
                 // No more tool calls, we're done with this turn
                 api_msgs.push(assistant_msg);
                 break;
             }
         }
 
-        Ok((api_msgs, total_usage))
-    }
+            // Show completion footer with timing and token usage
+            if !options.silent {
+                let elapsed = turn_start.elapsed();
+                let total_tok = total_usage.tokens_out + total_usage.reasoning_tokens;
+                if max_rounds_reached {
+                    if options.narrow {
+                        eprintln!("\x1B[90m│\x1B[33m⚠\x1B[0m \x1B[90m{:.0}s {:.0} tok\x1B[0m│", elapsed.as_secs_f64(), total_tok);
+                    } else {
+                        eprintln!("\x1B[90m── \x1B[33m用尽回合({}/{})\x1B[0m · {:.1}s · {} tok\x1B[90m ──\x1B[m",
+                            round - 1, options.max_rounds, elapsed.as_secs_f64(), total_tok);
+                    }
+                } else {
+                    if options.narrow {
+                        eprintln!("\x1B[90m│\x1B[32m✓\x1B[0m \x1B[90m{:.0}s {:.0} tok\x1B[0m│", elapsed.as_secs_f64(), total_tok);
+                    } else {
+                        eprintln!("\x1B[90m── \x1B[32m完成\x1B[0m · {:.1}s · {} tok\x1B[90m ──\x1B[0m",
+                            elapsed.as_secs_f64(), total_tok);
+                    }
+                }
+            }
+            Ok((api_msgs, total_usage))
+        }
 }

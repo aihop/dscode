@@ -114,6 +114,11 @@ pub fn tool_definitions() -> Vec<serde_json::Value> {
     crate::tools::tool_definitions()
 }
 
+/// Re-export tool_definitions_filtered from crate::tools.
+pub fn tool_definitions_filtered(names: &[&str]) -> Vec<serde_json::Value> {
+    crate::tools::tool_definitions_filtered(names)
+}
+
 /// Execute a tool call and return the result as a string.
 /// Delegates to crate::tools for the actual implementation.
 pub async fn execute_tool(tc: &ToolCall) -> String {

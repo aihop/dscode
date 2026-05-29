@@ -1,10 +1,11 @@
 /// One-shot prompt to DeepSeek with streaming + agent tool support.
 ///
 /// Receives prompt from args or stdin pipe.
-/// Runs a full agent loop: model → tool_calls → execute → model → ...
+/// Runs a full agent loop: model -> tool_calls -> execute -> model -> ...
 
 use crate::api::{self, resolve_model_name, resolve_api_key, resolve_base_url};
 use crate::engine::{AgentEngine, AgentOptions};
+use crate::tools;
 use crate::utils::{is_narrow_terminal, terminal_width};
 use clap::Args;
 use std::io::Read;
@@ -22,10 +23,11 @@ pub struct RunArgs {
 }
 
 pub async fn run(args: &RunArgs) {
+    api::ensure_default_config();
     let model = resolve_model_name(
         &args.model.clone().unwrap_or_else(|| api::default_model(true)),
     );
-    let stream = !args.no_stream;
+    let _stream = !args.no_stream;
 
     let prompt = if !args.prompt.is_empty() {
         args.prompt.join(" ")
@@ -54,8 +56,7 @@ pub async fn run(args: &RunArgs) {
     let narrow = is_narrow_terminal();
     let tw = terminal_width();
 
-    let tools_list = Some(api::tool_definitions());
-    
+      let tools_list = Some(api::tool_definitions_filtered(tools::CORE_TOOL_NAMES));    
     let mut sys_content = "You are dscode, a mobile-first AI coding agent. You are running in the project root. Always use relative paths.".to_string();
     if let Some(ap) = api::load_agent_md() {
         sys_content = format!("{}\n\n{}", sys_content, ap);
@@ -75,28 +76,8 @@ pub async fn run(args: &RunArgs) {
         cwd: std::env::current_dir().unwrap_or_default(),
     };
 
-    if stream {
-        match engine.run_loop(&options, api_msgs).await {
-            Ok((_msgs, usage)) => {
-                if narrow && usage.tokens_out > 0 {
-                    eprintln!("\x1B[90m─ usage: {:.0} tok (reasoning: {:.0})\x1B[0m", usage.tokens_out, usage.reasoning_tokens);
-                }
-            }
-            Err(e) => {
-                eprintln!("\nerror: {e}");
-            }
-        }
-    } else {
-        // Simple non-stream fallback (reusing call_nonstream from api)
-        // But engine doesn't have a non-stream loop yet. 
-        // For now, keep it simple or just use the engine's loop (which handles streaming internally)
-        match engine.run_loop(&options, api_msgs).await {
-            Ok((_msgs, usage)) => {
-                if usage.tokens_out > 0 {
-                    eprintln!("─ {:.0} tok (reasoning: {:.0})", usage.tokens_out, usage.reasoning_tokens);
-                }
-            }
-            Err(e) => { eprintln!("error: {e}"); std::process::exit(1); }
-        }
+    match engine.run_loop(&options, api_msgs).await {
+        Ok(_) => {}
+        Err(e) => { eprintln!("error: {e}"); std::process::exit(1); }
     }
 }

@@ -5,6 +5,7 @@
 
 use crate::api::{self, resolve_model_name, resolve_api_key, resolve_base_url};
 use crate::engine::{AgentEngine, AgentOptions};
+use crate::tools;
 use crate::utils::{is_narrow_terminal, terminal_width};
 use chrono::Utc;
 use clap::Args;
@@ -75,7 +76,7 @@ async fn compact_via_llm(
 
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
     let body = serde_json::json!({
-        "model": "deepseek-v4-pro",
+        "model": crate::api::default_model(false),
         "messages": [{"role": "user", "content": summary_prompt}],
         "max_tokens": 2048,
         "stream": false,
@@ -133,6 +134,7 @@ async fn compact_via_llm(
 }
 
 pub async fn run(args: &ChatArgs) {
+    api::ensure_default_config();
     let model = resolve_model_name(
         &args.model.clone().unwrap_or_else(|| api::default_model(true)),
     );
@@ -250,8 +252,7 @@ pub async fn run(args: &ChatArgs) {
         messages.push(Message { role: "user".into(), content: input, reasoning_content: None, created_at: Utc::now().timestamp() });
         compact_via_llm(&mut messages, &client, &base_url, &api_key, narrow).await;
 
-        let tools_list = if args.plain { None } else { Some(api::tool_definitions()) };
-        
+          let tools_list = if args.plain { None } else { Some(api::tool_definitions_filtered(tools::CORE_TOOL_NAMES)) };        
         let default_system = "\
 You are dscode, a mobile-first AI coding agent powered by DeepSeek.
 You are running directly in the project root directory. Always use relative paths for tools.

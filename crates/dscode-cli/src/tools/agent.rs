@@ -37,7 +37,7 @@ pub(crate) async fn exec_review(ctx: &ToolCtx, args: &str) -> String {
     let client = reqwest::Client::new();
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
     let body = json!({
-        "model": "deepseek-v4-pro",
+        "model": crate::api::default_model(false),
         "messages": [
             {"role": "system", "content": "You are a senior code reviewer. Return a concise review with: summary, issues (severity/title/description), and suggestions. Be direct and actionable."},
             {"role": "user", "content": format!("Review this code:\n```\n{}```", code)}
