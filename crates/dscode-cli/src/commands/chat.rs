@@ -181,6 +181,10 @@ pub async fn run(args: &ChatArgs) {
                         "content": stream_res.content,
                     });
                     if !stream_res.tool_calls.is_empty() {
+                        // DeepSeek requires reasoning_content to be echoed back if present
+                        if !stream_res.reasoning_content.is_empty() {
+                            assistant_msg["reasoning_content"] = serde_json::Value::String(stream_res.reasoning_content.clone());
+                        }
                         let tc_json: Vec<serde_json::Value> = stream_res.tool_calls.iter().map(|tc| {
                             serde_json::json!({
                                 "id": tc.id,

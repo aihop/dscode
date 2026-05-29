@@ -67,6 +67,7 @@ pub struct UsageInfo {
 #[derive(Debug)]
 pub struct StreamResult {
     pub content: String,
+    pub reasoning_content: String,
     pub tool_calls: Vec<ToolCall>,
     pub usage: UsageInfo,
 }
@@ -628,7 +629,7 @@ pub async fn call_stream(
     if showed_reasoning { eprintln!(); }
     println!();
     let final_calls: Vec<ToolCall> = tool_calls.into_values().filter(|t| !t.name.is_empty()).collect();
-    Ok(StreamResult { content: full, tool_calls: final_calls, usage })
+    Ok(StreamResult { content: full, reasoning_content: reasoning, tool_calls: final_calls, usage })
 }
 
 /// Helper: run a command and return stdout+stderr as string
