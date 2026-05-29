@@ -674,39 +674,15 @@ fn exec_edit_file(ctx: &ToolCtx, args: &str) -> String {
     }
     let full_path = cwd_join(ctx, path_str);
     match std::fs::read_to_string(&full_path) {
-        Ok(content) => {
+        Ok(ref content) => {
             let lines: Vec<&str> = content.lines().collect();
 
-            // Determine search range: if line hint given, only search near that line
-            let search_start = match line_hint {
-                Some(ln) if ln > 0 && ln as usize <= lines.len() => {
-                    // Search from (line-2) to (line+1) for context
-                    let start_idx = (ln as usize).saturating_sub(2);
-                    let end_idx = (ln as usize + 1).min(lines.len());
-                    // Build the window
-                    let window = lines[start_idx..end_idx].join("\n");
-                    match content.find(&window) {
-                        Some(pos) => {
-                            // Found the window, search for old within it
-                            let window_end = pos + window.len();
-                            match content[pos..window_end].find(old) {
-                                Some(rel) => Some(pos + rel),
-                                None => {
-                                    // Line hint given but exact match not in that area
-                                    // Fall through to full search
-                                    content.find(old)
-                                }
-                            }
-                        }
-                        None => content.find(old),
-                    }
-                }
-                _ => content.find(old),
-            };
+            // Try exact match first, then whitespace-tolerant fuzzy match
+            let match_result = find_edit_match(&content, &lines, old, line_hint);
 
-            match search_start {
+            match match_result {
                 None => {
-                    // Failure: return context to help the model self-correct
+                    // Build helpful error with context
                     let snippet = if let Some(ln) = line_hint {
                         let idx = (ln as usize).saturating_sub(1).min(lines.len().saturating_sub(1));
                         let start = idx.saturating_sub(3);
@@ -715,22 +691,19 @@ fn exec_edit_file(ctx: &ToolCtx, args: &str) -> String {
                             format!("{:>6}  {}", start + i + 1, l)
                         }).collect();
                         format!(" near line {}. Lines around it:\n{}", ln, snip.join("\n"))
-                    } else if let Some(ln) = line_hint {
-                        format!(" near line {}", ln)
                     } else {
                         String::new()
                     };
-                    format!("error: exact match not found in {}{}", full_path.display(), snippet)
+                    format!("error: match not found in {}{}", full_path.display(), snippet)
                 }
-                Some(pos) => {
-                    // Check uniqueness within the whole file
-                    if content[pos + old.len()..].find(old).is_some() {
-                        return format!("error: '{}' appears multiple times — include more context lines (add a `line` hint or include surrounding code)", old);
+                Some((pos, match_len)) => {
+                    // Check uniqueness
+                    if content[pos + match_len..].find(&content[pos..pos+match_len]).is_some() {
+                        return format!("error: matched text appears multiple times — include more context lines",);
                     }
-                    let new_content = content.replace(old, new);
+                    let new_content = format!("{}{}{}", &content[..pos], new, &content[pos + match_len..]);
                     match std::fs::write(&full_path, &new_content) {
                         Ok(_) => {
-                            // Show diff for preview
                             let diff = diff_preview(ctx, path_str);
                             if !diff.is_empty() {
                                 format!("edited {}\n{}", full_path.display(), diff)
@@ -745,6 +718,71 @@ fn exec_edit_file(ctx: &ToolCtx, args: &str) -> String {
         }
         Err(e) => format!("error reading {}: {e}", full_path.display()),
     }
+}
+
+/// Find a match for `old` text in `content`, trying exact match first,
+/// then whitespace-tolerant line-by-line matching.
+fn find_edit_match<'a>(content: &str, lines: &[&str], old: &str, line_hint: Option<u64>) -> Option<(usize, usize)> {
+    // 1. Try exact match
+    let search_area: &str = if let Some(ln) = line_hint {
+        let idx = (ln as usize).saturating_sub(2).min(lines.len().saturating_sub(1));
+        let end = (idx + 2).min(lines.len());
+        // Build window text
+        let start_byte = lines[..idx].iter().map(|l| l.len() + 1).sum::<usize>();
+        let end_byte = lines[..end].iter().map(|l| l.len() + 1).sum::<usize>();
+        &content[start_byte..end_byte.min(content.len())]
+    } else {
+        content
+    };
+
+    if let Some(rel) = search_area.find(old) {
+        let abs_pos = if let Some(ln) = line_hint {
+            let start_byte = lines[..(ln as usize).saturating_sub(2).min(lines.len().saturating_sub(1))].iter().map(|l| l.len() + 1).sum::<usize>();
+            start_byte + rel
+        } else { rel };
+        return Some((abs_pos, old.len()));
+    }
+
+    // 2. Whitespace-tolerant: trim each line and match
+    let old_lines: Vec<&str> = old.lines().map(|l| l.trim()).filter(|l| !l.is_empty()).collect();
+    if old_lines.is_empty() { return None; }
+
+    let content_trimmed: Vec<&str> = lines.iter().map(|l| l.trim()).collect();
+    let line_offsets: Vec<usize> = lines.iter().scan(0usize, |acc, l| {
+        let o = *acc; *acc += l.len() + 1; Some(o)
+    }).collect();
+
+    // Determine search range within the file
+    let search_lines = if let Some(ln) = line_hint {
+        let idx = (ln as usize).saturating_sub(5).min(lines.len().saturating_sub(1));
+        let end = (idx + 10).min(lines.len());
+        idx..end
+    } else {
+        0..lines.len()
+    };
+
+    for start in search_lines.start..search_lines.end.saturating_sub(old_lines.len().saturating_sub(1)) {
+        let mut all_match = true;
+        for (i, old_line) in old_lines.iter().enumerate() {
+            let file_line = content_trimmed.get(start + i).unwrap_or(&"");
+            // Trim internal whitespace differences too (multiple spaces → single)
+            let old_norm: String = old_line.split_whitespace().collect::<Vec<_>>().join(" ");
+            let file_norm: String = file_line.split_whitespace().collect::<Vec<_>>().join(" ");
+            if old_norm != file_norm {
+                all_match = false;
+                break;
+            }
+        }
+        if all_match {
+            // Calculate byte position and length of the matched region
+            let byte_start = line_offsets[start];
+            let byte_end = line_offsets.get(start + old_lines.len()).copied()
+                .unwrap_or(content.len());
+            return Some((byte_start, byte_end.saturating_sub(byte_start)));
+        }
+    }
+
+    None
 }
 
 fn exec_run_shell(ctx: &ToolCtx, args: &str) -> String {
