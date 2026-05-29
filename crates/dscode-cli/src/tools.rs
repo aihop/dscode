@@ -1104,12 +1104,12 @@ async fn exec_review(ctx: &ToolCtx, args: &str) -> String {
     let client = reqwest::Client::new();
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
     let body = serde_json::json!({
-        "model": "deepseek-v4-flash",
+        "model": "deepseek-v4-pro",
         "messages": [
             {"role": "system", "content": "You are a senior code reviewer. Return a concise review with: summary, issues (severity/title/description), and suggestions. Be direct and actionable."},
             {"role": "user", "content": format!("Review this code:\n```\n{}```", code)}
         ],
-        "max_tokens": 2048,
+        "max_tokens": 8192,
         "stream": false,
     });
     match client.post(&url).header("Authorization", format!("Bearer {api_key}")).json(&body).send().await {
@@ -1128,7 +1128,7 @@ async fn exec_fim_edit(ctx: &ToolCtx, args: &str) -> String {
     let path = v["path"].as_str().unwrap_or("");
     let prefix_anchor = v["prefix_anchor"].as_str().unwrap_or("");
     let suffix_anchor = v["suffix_anchor"].as_str().unwrap_or("");
-    let max_tokens = v["max_tokens"].as_u64().unwrap_or(512).min(2048);
+    let max_tokens = v["max_tokens"].as_u64().unwrap_or(1024).min(4096);
     if path.is_empty() || prefix_anchor.is_empty() || suffix_anchor.is_empty() {
         return "error: path, prefix_anchor, and suffix_anchor are required".to_string();
     }
@@ -1151,8 +1151,9 @@ async fn exec_fim_edit(ctx: &ToolCtx, args: &str) -> String {
     let base_url = resolve_base_url();
     let client = reqwest::Client::new();
     let url = format!("{}/completions", base_url.trim_end_matches('/'));
+    let fim_model = "deepseek-v4-pro";
     let body = serde_json::json!({
-        "model": "deepseek-v4-flash",
+        "model": fim_model,
         "prompt": prompt,
         "suffix": suffix,
         "max_tokens": max_tokens,
