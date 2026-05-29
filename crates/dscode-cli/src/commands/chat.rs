@@ -1,7 +1,7 @@
 /// Mobile-first interactive chat with DeepSeek.
 ///
 /// Thin UX layer on top of dscode engine + shared api.rs.
-/// Session persistence via JSON, narrow-terminal aware.
+/// Session persistence via SQLite (codewhale-state).
 
 use crate::api::{self, resolve_model_name, resolve_api_key, resolve_base_url};
 use chrono::Utc;
@@ -28,15 +28,6 @@ pub struct ChatArgs {
     pub no_stream: bool,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-struct Session {
-    id: String,
-    model: String,
-    created_at: i64,
-    updated_at: i64,
-    messages: Vec<Message>,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Message {
     role: String,
@@ -59,19 +50,22 @@ pub async fn run(args: &ChatArgs) {
     let base_url = resolve_base_url();
     let client = reqwest::Client::new();
 
+    // Open state store (fail gracefully → in-memory only)
+    let store = open_store();
+
     // Session resume: explicit -s, or auto-resume latest, or --new
-    let (_session_id, mut messages) = if let Some(sid) = &args.session {
-        match load_session(sid) {
-            Some(s) => { eprintln!("(resumed session {})", &s.id[..8]); (s.id, s.messages) }
-            None => { eprintln!("session '{sid}' not found, starting new"); (Uuid::new_v4().to_string(), Vec::new()) }
+    let (thread_id, mut messages) = if let Some(sid) = &args.session {
+        match store.as_ref().and_then(|s| load_store_thread(s, sid)) {
+            Some((id, msgs)) => { eprintln!("(resumed session {})", &id[..8]); (id, msgs) }
+            None => { eprintln!("session '{sid}' not found, starting new"); (new_thread(&store, &model), Vec::new()) }
         }
     } else if args.new {
-        (Uuid::new_v4().to_string(), Vec::new())
+        (new_thread(&store, &model), Vec::new())
     } else {
         // Auto-resume: find the most recent session
-        match latest_session() {
-            Some(s) => { eprintln!("(resumed latest session {})", &s.id[..8]); (s.id, s.messages) }
-            None => (Uuid::new_v4().to_string(), Vec::new())
+        match store.as_ref().and_then(|s| latest_store_thread(s)) {
+            Some((id, msgs)) => { eprintln!("(resumed latest session {})", &id[..8]); (id, msgs) }
+            None => (new_thread(&store, &model), Vec::new())
         }
     };
 
@@ -171,7 +165,7 @@ pub async fn run(args: &ChatArgs) {
                 println!("/save  save now");
                 continue;
             }
-            "/save" => { save_session(&model, &messages); println!("saved"); continue; }
+            "/save" => { persist_session(&store, &thread_id, &model, &messages); println!("saved"); continue; }
             _ => {}
         }
 
@@ -252,7 +246,7 @@ pub async fn run(args: &ChatArgs) {
                             created_at: Utc::now().timestamp(),
                         });
                         if narrow { eprintln!("─ {:.0} tok", stream_res.usage.tokens_out); }
-                        save_session(&model, &messages);
+                        persist_session(&store, &thread_id, &model, &messages);
                         break;
                     }
                 }
@@ -265,88 +259,129 @@ pub async fn run(args: &ChatArgs) {
         }
     }
 
-    save_session(&model, &messages);
+    persist_session(&store, &thread_id, &model, &messages);
 }
 
-// ── Session persistence ──────────────────────────────────────────
+// ── State store (codewhale-state SQLite) ─────────────────────────
 
-fn session_dir() -> PathBuf {
-    dirs::data_dir().unwrap_or_else(|| PathBuf::from("~/.local/share")).join("dscode").join("sessions")
+use codewhale_state::{StateStore, ThreadListFilters, ThreadMetadata, ThreadStatus, SessionSource};
+
+fn db_path() -> PathBuf {
+    dirs::data_dir().unwrap_or_else(|| PathBuf::from("~/.local/share"))
+        .join("dscode").join("state.db")
 }
 
-fn session_path(id: &str) -> PathBuf { session_dir().join(format!("{id}.json")) }
-
-fn save_session(model: &str, messages: &[Message]) {
-    let dir = session_dir();
-    std::fs::create_dir_all(&dir).ok();
-    let id = find_matching_session(messages).unwrap_or_else(|| Uuid::new_v4().to_string());
-    let s = Session {
-        id: id.clone(), model: model.to_string(),
-        created_at: messages.first().map(|m| m.created_at).unwrap_or_else(|| Utc::now().timestamp()),
-        updated_at: Utc::now().timestamp(), messages: messages.to_vec(),
-    };
-    if let Ok(json) = serde_json::to_string_pretty(&s) {
-        std::fs::write(session_path(&id), &json).ok();
+fn open_store() -> Option<StateStore> {
+    let path = db_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).ok();
     }
+    StateStore::open(Some(path)).ok()
 }
 
-fn find_matching_session(messages: &[Message]) -> Option<String> {
-    let dir = session_dir();
-    if !dir.exists() { return None; }
-    for entry in std::fs::read_dir(dir).ok()?.flatten() {
-        let path = entry.path();
-        if path.extension().is_some_and(|e| e == "json") {
-            if let Ok(c) = std::fs::read_to_string(&path) {
-                if let Ok(s) = serde_json::from_str::<Session>(&c) {
-                    if s.messages.len() == messages.len()
-                        && s.messages.iter().zip(messages.iter()).all(|(a, b)| a.role == b.role && a.content == b.content)
-                    { return Some(s.id); }
-                }
-            }
+/// Create a new thread in the store and return its id.
+fn new_thread(store: &Option<StateStore>, model: &str) -> String {
+    let id = Uuid::new_v4().to_string();
+    let Some(store) = store else { return id };
+    let now = Utc::now().timestamp();
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let _ = store.upsert_thread(&ThreadMetadata {
+        id: id.clone(),
+        rollout_path: None,
+        preview: String::new(),
+        ephemeral: false,
+        model_provider: model.to_string(),
+        created_at: now,
+        updated_at: now,
+        status: ThreadStatus::Running,
+        path: None,
+        cwd,
+        cli_version: env!("CARGO_PKG_VERSION").to_string(),
+        source: SessionSource::Interactive,
+        name: None,
+        sandbox_policy: None,
+        approval_mode: None,
+        archived: false,
+        archived_at: None,
+        git_sha: None,
+        git_branch: None,
+        git_origin_url: None,
+        memory_mode: None,
+    });
+    id
+}
+
+/// Persist all messages and update thread metadata.
+fn persist_session(store: &Option<StateStore>, thread_id: &str, model: &str, messages: &[Message]) {
+    let Some(store) = store else { return };
+    // Re-write all messages
+    let _ = store.clear_messages(thread_id);
+    for m in messages {
+        let _ = store.append_message(thread_id, &m.role, &m.content, None);
+    }
+    // Update thread metadata
+    let now = Utc::now().timestamp();
+    let preview = messages.first()
+        .map(|m| m.content.chars().take(120).collect())
+        .unwrap_or_default();
+    let mut thread = store.get_thread(thread_id).ok().flatten().unwrap_or_else(|| {
+        let cwd = std::env::current_dir().unwrap_or_default();
+        ThreadMetadata {
+            id: thread_id.to_string(),
+            rollout_path: None,
+            preview: String::new(),
+            ephemeral: false,
+            model_provider: model.to_string(),
+            created_at: now,
+            updated_at: now,
+            status: ThreadStatus::Running,
+            path: None,
+            cwd,
+            cli_version: env!("CARGO_PKG_VERSION").to_string(),
+            source: SessionSource::Interactive,
+            name: None,
+            sandbox_policy: None,
+            approval_mode: None,
+            archived: false,
+            archived_at: None,
+            git_sha: None,
+            git_branch: None,
+            git_origin_url: None,
+            memory_mode: None,
         }
-    }
-    None
+    });
+    thread.updated_at = now;
+    thread.preview = preview;
+    let _ = store.upsert_thread(&thread);
 }
 
-/// Find the most recently updated session
-fn latest_session() -> Option<Session> {
-    let dir = session_dir();
-    if !dir.exists() { return None; }
-    let mut latest: Option<(i64, Session)> = None;
-    for entry in std::fs::read_dir(dir).ok()?.flatten() {
-        let path = entry.path();
-        if path.extension().is_some_and(|e| e == "json") {
-            if let Ok(c) = std::fs::read_to_string(&path) {
-                if let Ok(s) = serde_json::from_str::<Session>(&c) {
-                    let ts = s.updated_at;
-                    if latest.as_ref().map_or(true, |(t, _)| ts > *t) {
-                        latest = Some((ts, s));
-                    }
-                }
-            }
-        }
-    }
-    latest.map(|(_, s)| s)
-}
-
-fn load_session(id: &str) -> Option<Session> {
-    let p = session_path(id);
-    if p.exists() {
-        return serde_json::from_str(&std::fs::read_to_string(p).ok()?).ok();
+/// Load thread messages from store by exact or prefix id.
+fn load_store_thread(store: &StateStore, id: &str) -> Option<(String, Vec<Message>)> {
+    // Exact match
+    if let Ok(Some(t)) = store.get_thread(id) {
+        let msgs = store.list_messages(&t.id, None).unwrap_or_default()
+            .into_iter().map(|m| Message { role: m.role, content: m.content, created_at: m.created_at }).collect();
+        return Some((t.id, msgs));
     }
     // Prefix match
-    let dir = session_dir();
-    if dir.exists() {
-        for entry in std::fs::read_dir(dir).ok()?.flatten() {
-            let p = entry.path();
-            if p.extension().is_some_and(|e| e == "json")
-                && p.file_stem().and_then(|s| s.to_str()).is_some_and(|s| s.starts_with(id))
-            {
-                return serde_json::from_str(&std::fs::read_to_string(p).ok()?).ok();
-            }
+    let threads = store.list_threads(ThreadListFilters { include_archived: false, limit: Some(100) }).ok()?;
+    for t in threads {
+        if t.id.starts_with(id) {
+            let msgs = store.list_messages(&t.id, None).unwrap_or_default()
+                .into_iter().map(|m| Message { role: m.role, content: m.content, created_at: m.created_at }).collect();
+            return Some((t.id, msgs));
         }
     }
     None
+}
+
+/// Find the most recently updated thread.
+fn latest_store_thread(store: &StateStore) -> Option<(String, Vec<Message>)> {
+    let t = store.list_threads(ThreadListFilters { include_archived: false, limit: Some(1) })
+        .ok()?.into_iter().next()?;
+    let msgs = store.list_messages(&t.id, None).unwrap_or_default()
+        .into_iter().map(|m| Message { role: m.role, content: m.content, created_at: m.created_at }).collect();
+    Some((t.id, msgs))
 }
 
 // ── Terminal helpers ─────────────────────────────────────────────
