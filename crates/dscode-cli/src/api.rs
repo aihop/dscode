@@ -86,7 +86,7 @@ pub fn tool_definitions() -> Vec<serde_json::Value> {
             "type": "function",
             "function": {
                 "name": "read_file",
-                "description": "Read the contents of a file. Path is relative to the project root.",
+                "description": "Read the contents of a file. Path relative to project root.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -99,8 +99,53 @@ pub fn tool_definitions() -> Vec<serde_json::Value> {
         serde_json::json!({
             "type": "function",
             "function": {
+                "name": "write_file",
+                "description": "Create or overwrite a file with content. Creates parent dirs if needed. Use for new files or full rewrites.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "File path relative to project root"},
+                        "content": {"type": "string", "description": "Full file content"}
+                    },
+                    "required": ["path", "content"]
+                }
+            }
+        }),
+        serde_json::json!({
+            "type": "function",
+            "function": {
+                "name": "edit_file",
+                "description": "Replace text in an existing file. Use for surgical edits, not full rewrites. Searches for exact old text and replaces it.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "File path relative to project root"},
+                        "old": {"type": "string", "description": "Existing text to find (exact match)"},
+                        "new": {"type": "string", "description": "Replacement text"}
+                    },
+                    "required": ["path", "old", "new"]
+                }
+            }
+        }),
+        serde_json::json!({
+            "type": "function",
+            "function": {
+                "name": "run_shell",
+                "description": "Execute a shell command in the project root directory. Returns stdout+stderr. Blocked: rm -rf /, dd, mkfs, format, :(){ :|:& };:.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "command": {"type": "string", "description": "Shell command to run"}
+                    },
+                    "required": ["command"]
+                }
+            }
+        }),
+        serde_json::json!({
+            "type": "function",
+            "function": {
                 "name": "search_code",
-                "description": "Search for a pattern in project files (grep). Returns matching lines with file names.",
+                "description": "Search for a pattern in project files (grep). Returns matches with file names.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -115,7 +160,7 @@ pub fn tool_definitions() -> Vec<serde_json::Value> {
             "type": "function",
             "function": {
                 "name": "list_files",
-                "description": "List files and directories in a path.",
+                "description": "List files and dirs in a path. Shows type (dir/file) and name.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -130,6 +175,7 @@ pub fn tool_definitions() -> Vec<serde_json::Value> {
 
 /// Execute a tool call and return the result as a string.
 /// Runs inside the project root cwd.
+/// Safety: blocks destructive commands (rm -rf /, dd, etc.)
 pub fn execute_tool(tc: &ToolCall) -> String {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     match tc.name.as_str() {
@@ -153,6 +199,74 @@ pub fn execute_tool(tc: &ToolCall) -> String {
                     }
                 }
                 Err(e) => format!("error reading {}: {e}", full_path.display()),
+            }
+        }
+        "write_file" => {
+            let args: serde_json::Value = serde_json::from_str(&tc.arguments).unwrap_or_default();
+            let path_str = args["path"].as_str().unwrap_or("");
+            let content = args["content"].as_str().unwrap_or("");
+            if path_str.is_empty() { return "error: no path provided".to_string(); }
+            let full_path = if path_str.starts_with('/') { PathBuf::from(path_str) } else { cwd.join(path_str) };
+            if let Some(parent) = full_path.parent() { std::fs::create_dir_all(parent).ok(); }
+            match std::fs::write(&full_path, content) {
+                Ok(_) => format!("written {} ({} bytes)", full_path.display(), content.len()),
+                Err(e) => format!("error writing {}: {e}", full_path.display()),
+            }
+        }
+        "edit_file" => {
+            let args: serde_json::Value = serde_json::from_str(&tc.arguments).unwrap_or_default();
+            let path_str = args["path"].as_str().unwrap_or("");
+            let old = args["old"].as_str().unwrap_or("");
+            let new = args["new"].as_str().unwrap_or("");
+            if path_str.is_empty() { return "error: no path".to_string(); }
+            let full_path = if path_str.starts_with('/') { PathBuf::from(path_str) } else { cwd.join(path_str) };
+            match std::fs::read_to_string(&full_path) {
+                Ok(content) => {
+                    if !content.contains(old) {
+                        return format!("error: exact match not found in {}", full_path.display());
+                    }
+                    let new_content = content.replace(old, new);
+                    match std::fs::write(&full_path, &new_content) {
+                        Ok(_) => format!("edited {}", full_path.display()),
+                        Err(e) => format!("error writing {}: {e}", full_path.display()),
+                    }
+                }
+                Err(e) => format!("error reading {}: {e}", full_path.display()),
+            }
+        }
+        "run_shell" => {
+            let args: serde_json::Value = serde_json::from_str(&tc.arguments).unwrap_or_default();
+            let cmd_str = args["command"].as_str().unwrap_or("");
+            if cmd_str.is_empty() { return "error: no command".to_string(); }
+            // Safety: block destructive commands
+            let lower = cmd_str.to_lowercase();
+            let blocked = ["rm -rf /", "rm -rf /*", "dd if=", "mkfs.", "format ", ":(){ :|:& };:"];
+            if blocked.iter().any(|b| lower.contains(b)) {
+                return "blocked: destructive command not allowed".to_string();
+            }
+            match std::process::Command::new("sh")
+                .args(["-c", cmd_str])
+                .current_dir(&cwd)
+                .output()
+            {
+                Ok(output) => {
+                    let mut out = String::new();
+                    if !output.stdout.is_empty() {
+                        out.push_str(&String::from_utf8_lossy(&output.stdout));
+                    }
+                    if !output.stderr.is_empty() {
+                        if !out.is_empty() { out.push('\n'); }
+                        out.push_str(&String::from_utf8_lossy(&output.stderr));
+                    }
+                    if out.len() > 10000 {
+                        out = format!("{}... (truncated, {} total)", &out[..10000], out.len());
+                    }
+                    if !output.status.success() {
+                        out = format!("exit code {}: {}", output.status.code().unwrap_or(-1), out);
+                    }
+                    out
+                }
+                Err(e) => format!("exec error: {e}"),
             }
         }
         "search_code" => {

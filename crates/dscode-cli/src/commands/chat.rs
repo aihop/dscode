@@ -164,7 +164,7 @@ pub async fn run(args: &ChatArgs) {
         api_msgs.extend(messages.iter().map(|m| serde_json::json!({"role": m.role, "content": m.content})));
 
         // Agent loop: chat → tool_calls → execute → chat → ...
-        let max_agent_rounds = 5;
+        let max_agent_rounds = 15;
         let mut agent_round = 0;
         let mut final_content = String::new();
 
