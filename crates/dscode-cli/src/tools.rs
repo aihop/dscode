@@ -59,6 +59,11 @@ impl ToolHandler for DscHandler {
             "list_files" => exec_list_files(&self.ctx, &args),
             "web_search" => exec_web_search(&self.ctx, &args),
             "fetch_url" => exec_fetch_url(&self.ctx, &args),
+            "git_log" => exec_git_log(&self.ctx, &args),
+            "git_show" => exec_git_show(&self.ctx, &args),
+            "git_blame" => exec_git_blame(&self.ctx, &args),
+            "file_search" => exec_file_search(&self.ctx, &args),
+            "apply_patch" => exec_apply_patch(&self.ctx, &args),
             _ => format!("unknown tool: {}", invocation.tool_name),
         };
 
@@ -181,6 +186,75 @@ fn tool_specs() -> Vec<ToolSpec> {
             supports_parallel_tool_calls: true,
             timeout_ms: Some(15_000),
         },
+        ToolSpec {
+            name: "git_log".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "max_count": {"type": "integer", "description": "Max commits to show (default 20)"},
+                    "path": {"type": "string", "description": "Optional file/subdirectory to scope history"}
+                }
+            }),
+            output_schema: json!({}),
+            supports_parallel_tool_calls: true,
+            timeout_ms: Some(15_000),
+        },
+        ToolSpec {
+            name: "git_show".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "rev": {"type": "string", "description": "Revision to show (commit SHA, branch, tag)"}
+                },
+                "required": ["rev"]
+            }),
+            output_schema: json!({}),
+            supports_parallel_tool_calls: true,
+            timeout_ms: Some(15_000),
+        },
+        ToolSpec {
+            name: "git_blame".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "File path relative to project root"},
+                    "start_line": {"type": "integer", "description": "First line (1-based, default 1)"},
+                    "max_lines": {"type": "integer", "description": "Max lines to show (default 200)"}
+                },
+                "required": ["path"]
+            }),
+            output_schema: json!({}),
+            supports_parallel_tool_calls: true,
+            timeout_ms: Some(15_000),
+        },
+        ToolSpec {
+            name: "file_search".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Filename or path fragment to search for (fuzzy)"},
+                    "path": {"type": "string", "description": "Optional subdirectory to search (default .)"},
+                    "limit": {"type": "integer", "description": "Max results (default 20)"}
+                },
+                "required": ["query"]
+            }),
+            output_schema: json!({}),
+            supports_parallel_tool_calls: true,
+            timeout_ms: Some(10_000),
+        },
+        ToolSpec {
+            name: "apply_patch".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "patch": {"type": "string", "description": "Unified diff/patch content to apply"}
+                },
+                "required": ["patch"]
+            }),
+            output_schema: json!({}),
+            supports_parallel_tool_calls: false,
+            timeout_ms: Some(30_000),
+        },
     ]
 }
 
@@ -245,6 +319,11 @@ fn tool_description(name: &str) -> &'static str {
         "list_files"  => "List files and directories in a given path.",
         "web_search"  => "Search the web using DuckDuckGo and return results.",
         "fetch_url"   => "Fetch a URL via HTTP GET and return its content (max 10s timeout).",
+        "git_log"     => "Show commit log history. Optional path and max_count to scope results.",
+        "git_show"    => "Show details of a specific commit/revision: diff, metadata, and message.",
+        "git_blame"   => "Show who last modified each line of a file. Optional line range.",
+        "file_search" => "Search for files by name (fuzzy match). Returns matching file paths.",
+        "apply_patch" => "Apply a unified-diff patch to the working tree (via git apply).",
         _             => "Run a tool by name",
     }
 }
@@ -592,6 +671,118 @@ fn exec_fetch_url(_ctx: &ToolCtx, args: &str) -> String {
             format!("fetch failed (exit {}): {err}", output.status.code().unwrap_or(-1))
         }
         Err(e) => format!("fetch failed: {e}"),
+    }
+}
+
+// ── Git tools ─────────────────────────────────────────────────
+
+fn exec_git_log(ctx: &ToolCtx, args: &str) -> String {
+    let v: Value = serde_json::from_str(args).unwrap_or_default();
+    let max_count = v["max_count"].as_u64().unwrap_or(20).min(100);
+    let path = v["path"].as_str().unwrap_or("");
+    let mut cmd = std::process::Command::new("git");
+    cmd.args(["log", "--oneline", "-n", &max_count.to_string()]);
+    if !path.is_empty() { cmd.arg(path); }
+    cmd.current_dir(&ctx.cwd);
+    match cmd.output() {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).to_string(),
+        Ok(o) => format!("git log failed: {}", String::from_utf8_lossy(&o.stderr)),
+        Err(e) => format!("git log error: {e}"),
+    }
+}
+
+fn exec_git_show(ctx: &ToolCtx, args: &str) -> String {
+    let v: Value = serde_json::from_str(args).unwrap_or_default();
+    let rev = v["rev"].as_str().unwrap_or("");
+    if rev.is_empty() { return "error: no rev provided".to_string(); }
+    let output = std::process::Command::new("git")
+        .args(["show", "--stat", "--patch", rev])
+        .current_dir(&ctx.cwd)
+        .output();
+    match output {
+        Ok(o) if o.status.success() => {
+            let mut s = String::from_utf8_lossy(&o.stdout).to_string();
+            if s.len() > 8000 { s = format!("{}... (truncated, {} total)", &s[..8000], s.len()); }
+            s
+        }
+        Ok(o) => format!("git show failed: {}", String::from_utf8_lossy(&o.stderr)),
+        Err(e) => format!("git show error: {e}"),
+    }
+}
+
+fn exec_git_blame(ctx: &ToolCtx, args: &str) -> String {
+    let v: Value = serde_json::from_str(args).unwrap_or_default();
+    let path = v["path"].as_str().unwrap_or("");
+    if path.is_empty() { return "error: no path provided".to_string(); }
+    let full_path = cwd_join(ctx, path);
+    let start = v["start_line"].as_u64().unwrap_or(1).max(1);
+    let max_lines = v["max_lines"].as_u64().unwrap_or(200).min(1000);
+    match std::process::Command::new("git")
+        .args(["blame", &format!("-L{start},{end}", end = start + max_lines - 1), "--", &full_path.to_string_lossy()])
+        .current_dir(&ctx.cwd)
+        .output()
+    {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).to_string(),
+        Ok(o) => format!("git blame failed: {}", String::from_utf8_lossy(&o.stderr)),
+        Err(e) => format!("git blame error: {e}"),
+    }
+}
+
+// ── File search (fuzzy filename) ─────────────────────────────
+
+fn exec_file_search(ctx: &ToolCtx, args: &str) -> String {
+    let v: Value = serde_json::from_str(args).unwrap_or_default();
+    let query = v["query"].as_str().unwrap_or("");
+    let search_path = v["path"].as_str().unwrap_or(".");
+    let limit = v["limit"].as_u64().unwrap_or(20).min(100) as usize;
+    if query.is_empty() { return "no query provided".to_string(); }
+
+    let root = cwd_join(ctx, search_path);
+    let query_lower = query.to_lowercase();
+    let mut results = Vec::new();
+    let mut dirs = vec![root.clone()];
+    while let Some(dir) = dirs.pop() {
+        let entries = match std::fs::read_dir(&dir) { Ok(e) => e, Err(_) => continue };
+        for entry in entries.flatten() {
+            if results.len() >= limit { break; }
+            let path = entry.path();
+            if path.file_name().map_or(false, |n| n.to_string_lossy().to_lowercase().contains(&query_lower)) {
+                if let Ok(rel) = path.strip_prefix(&root) {
+                    results.push(format!("  {}", rel.display()));
+                } else {
+                    results.push(format!("  {}", path.display()));
+                }
+            }
+            if path.is_dir() {
+                dirs.push(path);
+            }
+        }
+        if results.len() >= limit { break; }
+    }
+
+    if results.is_empty() { format!("no files matching '{query}'") }
+    else { format!("{} files matching '{query}':\n{}", results.len(), results.join("\n")) }
+}
+
+// ── Apply patch ──────────────────────────────────────────────
+
+fn exec_apply_patch(ctx: &ToolCtx, args: &str) -> String {
+    let v: Value = serde_json::from_str(args).unwrap_or_default();
+    let patch = v["patch"].as_str().unwrap_or("");
+    if patch.is_empty() { return "error: no patch provided".to_string(); }
+    // Write patch to a temp file and apply via git apply
+    let tmp = std::env::temp_dir().join(format!("dscode-patch-{}.diff", std::process::id()));
+    let write_ok = std::fs::write(&tmp, patch).is_ok();
+    if !write_ok { return "error: could not write patch file".to_string(); }
+    let result = std::process::Command::new("git")
+        .args(["apply", &tmp.to_string_lossy()])
+        .current_dir(&ctx.cwd)
+        .output();
+    let _ = std::fs::remove_file(&tmp);
+    match result {
+        Ok(o) if o.status.success() => "patch applied successfully".to_string(),
+        Ok(o) => format!("patch failed:\n{}", String::from_utf8_lossy(&o.stderr)),
+        Err(e) => format!("git apply error: {e}"),
     }
 }
 

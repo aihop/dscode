@@ -20,7 +20,7 @@ dscode chat
 ## Features
 
 - **Pure CLI** — no web UI, no TUI, no bloat. Just stdin/stdout.
-- **Agent with tools** — autonomous multi-turn execution: read/write/edit files, run shell commands, search code, fetch URLs.
+- **Agent with 13 tools** — read/write/edit files, git history, shell execution, code search, file search, web search, patch apply, URL fetch.
 - **Streaming Markdown** — see output token by token with full Markdown → ANSI rendering (headings, bold, code blocks, lists, syntax highlighting).
 - **Mobile-optimized** — auto-detects narrow terminals (≤80 columns), word-wrap, minimal output.
 - **Session persistence** — SQLite-backed, save/resume/list/export conversations.
@@ -125,14 +125,19 @@ dscode session delete abc12345
 dscode includes 8 built-in tools for autonomous code work:
 
 ```
-read_file     Read file contents
-write_file    Create or overwrite files
-edit_file     Surgical text replacement in files
-run_shell     Execute shell commands (blocked: destructive)
-search_code   Grep for regex patterns in the project
-list_files    List directory contents
-web_search    Search the web via DuckDuckGo
-fetch_url     HTTP GET a URL
+read_file      Read file contents
+write_file     Create or overwrite files
+edit_file      Surgical text replacement in files
+run_shell      Execute shell commands (blocked: destructive)
+search_code    Grep for regex patterns in the project
+list_files     List directory contents
+web_search     Search the web via DuckDuckGo
+fetch_url      HTTP GET a URL
+git_log        Show commit history (optional path/max_count)
+git_show       Show commit details with diff
+git_blame      Show who last modified each line of a file
+file_search    Fuzzy filename search in the project
+apply_patch    Apply unified-diff patches to the working tree
 ```
 
 List them anytime: `dscode tools list`
