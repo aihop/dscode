@@ -3,8 +3,11 @@ use codewhale_state::{StateStore, ThreadListFilters};
 
 #[derive(Debug, Subcommand)]
 pub enum SessionCommands {
-    /// List all sessions
-    List,
+    /// List sessions (optionally filtered by current project)
+    List {
+        #[arg(long, short = 'p', help = "Show only sessions for current project directory")]
+        project: bool,
+    },
     /// Show session details
     Show { id: String },
     /// Rename a session
@@ -56,7 +59,7 @@ pub async fn run(cmd: &SessionCommands) {
     };
 
     match cmd {
-        SessionCommands::List => list(&store),
+        SessionCommands::List { project } => list(&store, *project),
         SessionCommands::Show { id } => show(&store, id),
         SessionCommands::Rename { id, name } => rename(&store, id, name),
         SessionCommands::Delete { id } => delete(&store, id),
@@ -64,7 +67,7 @@ pub async fn run(cmd: &SessionCommands) {
     }
 }
 
-fn list(store: &StateStore) {
+fn list(store: &StateStore, project: bool) {
     let threads = match store.list_threads(ThreadListFilters { include_archived: false, limit: Some(100) }) {
         Ok(t) => t,
         Err(_) => { println!("No sessions found."); return; }
@@ -75,22 +78,41 @@ fn list(store: &StateStore) {
         return;
     }
 
-    println!("Sessions");
-    println!();
+    let cwd = if project { Some(std::env::current_dir().unwrap_or_default()) } else { None };
+
+    let header = if project { "Sessions (current project)" } else { "Sessions" };
+    println!("{header}");
+
     for t in &threads {
+        // Filter by project if --project flag is set
+        if let Some(ref cwd) = cwd {
+            if t.cwd != *cwd { continue; }
+        }
+
         let short = if t.id.len() > 8 { &t.id[..8] } else { &t.id };
         let name_tag = t.name.as_deref().map(|n| format!(" ({n})")).unwrap_or_default();
-        let preview = if t.preview.len() > 50 {
-            format!("{}...", &t.preview[..47])
+
+        // Show short project path
+        let project_tag = t.cwd.file_name()
+            .map(|n| format!(" \x1B[36m[{}]\x1B[0m", n.to_string_lossy()))
+            .unwrap_or_default();
+
+        let preview = if t.preview.len() > 40 {
+            format!("{}...", &t.preview[..37])
         } else {
             t.preview.clone()
         };
         let msgs = store.list_messages(&t.id, Some(1)).unwrap_or_default();
         let count_hint = if msgs.is_empty() { "0".to_string() }
-            else { format!("~{}", msgs.len() * 2) }; // rough estimate
-        println!("  {short}{name_tag}  {} [{}] {}", t.model_provider, count_hint, preview);
+            else { format!("~{}", msgs.len() * 2) };
+        println!("  {short}{name_tag}{project_tag}  {} [{}] {}", t.model_provider, count_hint, preview);
     }
     println!();
+    if project {
+        println!("  All sessions: dscode session list");
+    } else {
+        println!("  Current project: dscode session list -p");
+    }
     println!("  Resume: dscode chat -s <id>");
 }
 
@@ -104,6 +126,7 @@ fn show(store: &StateStore, id: &str) {
     println!("Session: {sid}");
     if let Some(ref name) = thread.name { println!("  name:     {name}"); }
     println!("  model:    {}", thread.model_provider);
+    println!("  project:  {}", thread.cwd.display());
     println!("  created:  {}", thread.created_at);
     println!("  updated:  {}", thread.updated_at);
     println!();

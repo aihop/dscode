@@ -149,17 +149,16 @@ pub async fn run(args: &ChatArgs) {
         .tcp_keepalive(Some(std::time::Duration::from_secs(30)))
         .build().unwrap();
 
-    let store = open_store();
-    let (thread_id, mut messages) = if let Some(sid) = &args.session {
-        match store.as_ref().and_then(|s| load_store_thread(s, sid)) {
-            Some((id, msgs)) => { eprintln!("(resumed session {})", &id[..8]); (id, msgs) }
+      let store = open_store();
+      let cwd = std::env::current_dir().unwrap_or_default();
+      let (thread_id, mut messages) = if let Some(sid) = &args.session {
+          match store.as_ref().and_then(|s| load_store_thread(s, sid)) {            Some((id, msgs)) => { eprintln!("(resumed session {})", &id[..8]); (id, msgs) }
             None => (new_thread(&store, &model), Vec::new())
         }
     } else if args.new {
         (new_thread(&store, &model), Vec::new())
     } else {
-        match store.as_ref().and_then(|s| latest_store_thread(s)) {
-            Some((id, msgs)) => { eprintln!("(resumed latest session {})", &id[..8]); (id, msgs) }
+          match store.as_ref().and_then(|s| latest_store_thread(s, &cwd)) {            Some((id, msgs)) => { eprintln!("(resumed latest session {})", &id[..8]); (id, msgs) }
             None => (new_thread(&store, &model), Vec::new())
         }
     };
@@ -420,12 +419,14 @@ fn load_store_thread(store: &StateStore, id: &str) -> Option<(String, Vec<Messag
     None
 }
 
-fn latest_store_thread(store: &StateStore) -> Option<(String, Vec<Message>)> {
-    let t = store.list_threads(ThreadListFilters { include_archived: false, limit: Some(1) }).ok()?.into_iter().next()?;
-    let msgs = store.list_messages(&t.id, None).unwrap_or_default().into_iter().map(msg_from_record).collect();
-    Some((t.id, msgs))
-}
-
+  fn latest_store_thread(store: &StateStore, cwd: &std::path::Path) -> Option<(String, Vec<Message>)> {
+      let threads = store.list_threads(ThreadListFilters { include_archived: false, limit: Some(100) }).ok()?;
+      let t = threads.into_iter()
+          .filter(|t| t.cwd == cwd)
+          .max_by_key(|t| t.updated_at)?;
+      let msgs = store.list_messages(&t.id, None).unwrap_or_default().into_iter().map(msg_from_record).collect();
+      Some((t.id, msgs))
+  }
 fn get_git_branch() -> Option<String> {
     let out = std::process::Command::new("git").args(["rev-parse", "--abbrev-ref", "HEAD"]).output().ok()?;
     if out.status.success() {
