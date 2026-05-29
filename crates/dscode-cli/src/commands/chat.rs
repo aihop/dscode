@@ -49,7 +49,7 @@ fn fallback_model(current: &str) -> Option<&'static str> {
 
 pub async fn run(args: &ChatArgs) {
     let model = resolve_model_name(
-        &args.model.clone().unwrap_or_else(|| api::default_model(false)),
+        &args.model.clone().unwrap_or_else(|| api::default_model(true)),
     );
     let stream = !args.no_stream;
 
