@@ -3,7 +3,7 @@
 /// Pure sync helpers consumed by the DscHandler dispatcher in mod.rs.
 
 use crate::tools::{cwd_join, ToolCtx};
-use serde_json::Value;
+use serde_json::{json, Value};
 
 // ── Read file ─────────────────────────────────────────────────
 
@@ -196,6 +196,7 @@ fn find_fuzzy_matches(
             let file_line = content_trimmed.get(start + i).unwrap_or(&"");
             let old_norm: String = old_line.split_whitespace().collect::<Vec<_>>().join(" ");
             let file_norm: String = file_line.split_whitespace().collect::<Vec<_>>().join(" ");
+            
             if old_norm != file_norm {
                 all_match = false;
                 break;
@@ -208,6 +209,32 @@ fn find_fuzzy_matches(
                 .copied()
                 .unwrap_or(content.len());
             matches.push((byte_start, byte_end.saturating_sub(byte_start)));
+        }
+    }
+    
+    // If no match found and we have a line hint, try even more relaxed matching
+    if matches.is_empty() && line_hint.is_some() {
+        let ln = line_hint.unwrap() as usize;
+        let start_search = ln.saturating_sub(10).min(lines.len());
+        let end_search = (ln + 10).min(lines.len());
+        
+        for start in start_search..end_search.saturating_sub(old_lines.len().saturating_sub(1)) {
+            let mut matches_count = 0;
+            for (i, old_line) in old_lines.iter().enumerate() {
+                let file_line = content_trimmed.get(start + i).unwrap_or(&"");
+                let old_norm: String = old_line.split_whitespace().collect::<Vec<_>>().join(" ");
+                let file_norm: String = file_line.split_whitespace().collect::<Vec<_>>().join(" ");
+                if old_norm == file_norm || (old_norm.len() > 10 && (file_norm.contains(&old_norm) || old_norm.contains(&file_norm))) {
+                    matches_count += 1;
+                }
+            }
+            // If most lines match, consider it a match
+            if matches_count >= old_lines.len().saturating_sub(1).max(1) {
+                let byte_start = line_offsets[start];
+                let byte_end = line_offsets.get(start + old_lines.len()).copied().unwrap_or(content.len());
+                matches.push((byte_start, byte_end.saturating_sub(byte_start)));
+                break; // Take the first "good enough" match near the hint
+            }
         }
     }
     matches
@@ -305,6 +332,79 @@ pub(crate) fn exec_apply_patch(ctx: &ToolCtx, args: &str) -> String {
         Ok(o) => format!("patch failed:\n{}", String::from_utf8_lossy(&o.stderr)),
         Err(e) => format!("git apply error: {e}"),
     }
+}
+
+// ── Get file info ─────────────────────────────────────────────
+
+pub(crate) fn exec_get_file_info(ctx: &ToolCtx, args: &str) -> String {
+    let v: Value = serde_json::from_str(args).unwrap_or_default();
+    let path_str = v["path"].as_str().unwrap_or("");
+    if path_str.is_empty() {
+        return "error: no path provided".to_string();
+    }
+    let full_path = cwd_join(ctx, path_str);
+    match std::fs::metadata(&full_path) {
+        Ok(meta) => {
+            let size = meta.len();
+            let is_dir = meta.is_dir();
+            let modified = meta.modified().ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            
+            let mut res = json!({
+                "path": full_path.display().to_string(),
+                "size": size,
+                "is_dir": is_dir,
+                "modified": modified,
+            });
+
+            if !is_dir {
+                if let Ok(content) = std::fs::read_to_string(&full_path) {
+                    let lines: Vec<&str> = content.lines().collect();
+                    res["line_count"] = json!(lines.len());
+                    // Add first 2 lines as preview
+                    let preview: Vec<&str> = lines.iter().take(2).copied().collect();
+                    res["preview"] = json!(preview.join("\n"));
+                }
+            }
+            res.to_string()
+        }
+        Err(e) => format!("error: {e}"),
+    }
+}
+
+// ── List tree ─────────────────────────────────────────────────
+
+pub(crate) fn exec_list_tree(ctx: &ToolCtx, args: &str) -> String {
+    let v: Value = serde_json::from_str(args).unwrap_or_default();
+    let path_str = v["path"].as_str().unwrap_or(".");
+    let max_depth = v["depth"].as_u64().unwrap_or(2) as usize;
+    let root = cwd_join(ctx, path_str);
+    
+    let mut out = String::new();
+    fn walk(dir: &std::path::Path, prefix: &str, depth: usize, max_depth: usize, out: &mut String) {
+        if depth > max_depth { return; }
+        let Ok(entries) = std::fs::read_dir(dir) else { return; };
+        let mut entries: Vec<_> = entries.filter_map(|e| e.ok()).collect();
+        entries.sort_by_key(|e| e.file_name());
+        
+        for (i, entry) in entries.iter().enumerate() {
+            let is_last = i == entries.len() - 1;
+            let connector = if is_last { "└── " } else { "├── " };
+            let name = entry.file_name().to_string_lossy().to_string();
+            out.push_str(&format!("{}{}{}\n", prefix, connector, name));
+            
+            if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                let new_prefix = format!("{}{}", prefix, if is_last { "    " } else { "│   " });
+                walk(&entry.path(), &new_prefix, depth + 1, max_depth, out);
+            }
+        }
+    }
+    
+    out.push_str(&format!("{}\n", root.display()));
+    walk(&root, "", 1, max_depth, &mut out);
+    out
 }
 
 // ── Diff preview helper ───────────────────────────────────────

@@ -69,6 +69,8 @@ impl ToolHandler for DscHandler {
             "write_file"       => file::exec_write_file(&self.ctx, &args),
             "edit_file"        => file::exec_edit_file(&self.ctx, &args),
             "list_files"       => file::exec_list_files(&self.ctx, &args),
+            "list_tree"        => file::exec_list_tree(&self.ctx, &args),
+            "get_file_info"    => file::exec_get_file_info(&self.ctx, &args),
             "apply_patch"      => file::exec_apply_patch(&self.ctx, &args),
 
             // Git tools
@@ -193,6 +195,32 @@ fn tool_specs() -> Vec<ToolSpec> {
                 "type": "object",
                 "properties": {
                     "path": {"type": "string", "description": "Directory path relative to project root"}
+                },
+                "required": ["path"]
+            }),
+            output_schema: json!({}),
+            supports_parallel_tool_calls: true,
+            timeout_ms: None,
+        },
+        ToolSpec {
+            name: "list_tree".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Directory path (default .)"},
+                    "depth": {"type": "integer", "description": "Max depth (default 2)"}
+                }
+            }),
+            output_schema: json!({}),
+            supports_parallel_tool_calls: true,
+            timeout_ms: None,
+        },
+        ToolSpec {
+            name: "get_file_info".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "File path"}
                 },
                 "required": ["path"]
             }),
@@ -542,6 +570,8 @@ fn tool_description(name: &str) -> &'static str {
         "read_file"   => "Read the contents of a file. Path relative to project root.",
         "write_file"  => "Create or overwrite a file with content. Creates parent dirs if needed.",
         "edit_file"   => "Replace text in an existing file by searching for old text and replacing it.",
+        "get_file_info" => "Get file metadata (size, mtime, line count) and a tiny preview without reading full content.",
+        "list_tree"   => "List directory structure in a tree format with a depth limit.",
         "run_shell"   => "Execute a shell command in the project root directory. Blocks destructive commands.",
         "search_code" => "Search for a regex pattern in project files (grep). Returns matches with file names.",
         "list_files"  => "List files and directories in a given path.",

@@ -57,12 +57,13 @@ async fn compact_via_llm(
     api_key: &str,
     narrow: bool,
 ) -> bool {
-    const COMPACT_AT_TOKENS: usize = 800_000;
+    const COMPACT_AT_TOKENS: usize = 100_000;
     let estimated: usize = messages.iter().map(|m| m.content.len() / 4 + 1).sum();
     if estimated < COMPACT_AT_TOKENS {
         return false;
     }
-    const KEEP: usize = 6;
+    // Keep last 10 messages (~5 turns) fully intact
+    const KEEP: usize = 10;
     if messages.len() <= KEEP + 2 {
         return false;
     }
