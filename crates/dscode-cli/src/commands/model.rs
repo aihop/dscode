@@ -30,14 +30,18 @@ static DS_MODELS: &[(&str, &str, &str, bool, bool)] = &[
 ];
 
 fn list(registry: &ModelRegistry) {
-    let models = registry.list();
+    // dscode is DeepSeek-only — filter out other providers
+    let models: Vec<_> = registry.list()
+        .into_iter()
+        .filter(|m| m.provider == codewhale_config::ProviderKind::Deepseek)
+        .collect();
 
-    println!("Available models");
+    println!("Available DeepSeek models");
     println!();
     println!("  {:<26} tools reasoning", "id");
     println!("  {}", "─".repeat(42));
 
-    for m in models {
+    for m in &models {
         let t = if m.supports_tools { "✓" } else { " " };
         let r = if m.supports_reasoning { "✓" } else { " " };
         println!("  {:<26} {t}      {r}", m.id);
