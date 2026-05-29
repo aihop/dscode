@@ -8,6 +8,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use codewhale_execpolicy::{
+    AskForApproval, ExecPolicyContext, ExecPolicyEngine, Ruleset, RulesetLayer,
+};
 use codewhale_protocol::{ToolKind, ToolOutput, ToolPayload};
 use codewhale_tools::{
     ConfiguredToolSpec, FunctionCallError, ToolCallSource, ToolHandler, ToolInvocation, ToolRegistry, ToolSpec,
@@ -275,6 +278,38 @@ pub async fn execute_tool(
     }
 }
 
+// ── Command safety policy (codewhale-execpolicy) ───────────────
+
+fn policy_engine() -> &'static ExecPolicyEngine {
+    static ENGINE: OnceLock<ExecPolicyEngine> = OnceLock::new();
+    ENGINE.get_or_init(|| {
+        let denied = vec![
+            "rm -rf /", "rm -rf /*", "dd if=", "mkfs.", "format ",
+            ":(){ :|:& };:", "reboot", "shutdown", "poweroff", "halt",
+            "init 0", "init 6", "chmod 777 /", "chown", "mv /*",
+            "wget http://", "curl http://", "> /dev/", "< /dev/",
+            "sudo ", "passwd",
+        ];
+        let trusted = vec![
+            "ls", "cat", "head", "tail", "echo", "pwd", "which",
+            "date", "whoami", "id", "uname", "env", "printenv",
+            "git status", "git log", "git diff", "git show", "git branch",
+            "git rev-parse", "git blame", "cargo check", "cargo build",
+            "cargo test", "cargo run", "cargo fmt", "cargo clippy",
+            "npm test", "npm run", "python", "python3", "node", "rustc",
+            "grep", "find", "sort", "wc", "du -sh", "df -h", "mkdir",
+            "touch", "cp", "mv", "rm", "cat ", "less ", "more ",
+        ];
+        ExecPolicyEngine::with_rulesets(vec![
+            Ruleset {
+                layer: RulesetLayer::BuiltinDefault,
+                trusted_prefixes: trusted.iter().map(|s| s.to_string()).collect(),
+                denied_prefixes: denied.iter().map(|s| s.to_string()).collect(),
+            },
+        ])
+    })
+}
+
 // ── Tool implementations (ported from api.rs) ──────────────────
 
 fn cwd_join(ctx: &ToolCtx, path_str: &str) -> PathBuf {
@@ -359,19 +394,21 @@ fn exec_run_shell(ctx: &ToolCtx, args: &str) -> String {
     if cmd_str.is_empty() {
         return "error: no command".to_string();
     }
-    // Safety: block destructive commands
-    let lower = cmd_str.to_lowercase();
-    let blocked = [
-        "rm -rf /",
-        "rm -rf /*",
-        "dd if=",
-        "mkfs.",
-        "format ",
-        ":(){ :|:& };:",
-    ];
-    if blocked.iter().any(|b| lower.contains(b)) {
-        return "blocked: destructive command not allowed".to_string();
+
+    // Safety check via codewhale-execpolicy
+    let engine = policy_engine();
+    let decision = engine.check(ExecPolicyContext {
+        command: cmd_str,
+        cwd: &ctx.cwd.to_string_lossy(),
+        ask_for_approval: AskForApproval::UnlessTrusted,
+        sandbox_mode: None,
+    });
+    match decision {
+        Ok(d) if !d.allow => return format!("blocked: {}", d.reason()),
+        Ok(_) => {} // allowed
+        Err(e) => return format!("policy error: {e}"),
     }
+
     match std::process::Command::new("sh")
         .args(["-c", cmd_str])
         .current_dir(&ctx.cwd)
