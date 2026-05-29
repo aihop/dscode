@@ -48,7 +48,9 @@ pub async fn run(args: &RunArgs) {
         std::process::exit(1);
     });
     let base_url = resolve_base_url();
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(300))
+        .build().unwrap();
 
     let narrow = terminal_width() <= 80;
     let tw = terminal_width();

@@ -168,8 +168,8 @@ pub async fn call_stream(
             if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(data) {
                 // Finish reason (diagnose truncation)
                 if let Some(fr) = parsed["choices"][0]["finish_reason"].as_str() {
-                    if fr == "length" && !narrow {
-                        eprintln!("\x1B[33m[response truncated by token limit]\x1B[0m");
+                    if fr == "length" {
+                        eprintln!("\x1B[33m\n[响应被 token 上限截断，可加 --model deepseek-v4-pro 获得更长输出]\x1B[0m");
                     }
                 }
                 // Exact usage + cache stats

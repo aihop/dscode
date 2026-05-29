@@ -60,7 +60,9 @@ pub async fn run(args: &ChatArgs) {
         std::process::exit(1);
     });
     let base_url = resolve_base_url();
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(300))
+        .build().unwrap();
 
     // Open state store (fail gracefully → in-memory only)
     let store = open_store();
