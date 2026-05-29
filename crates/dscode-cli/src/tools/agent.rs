@@ -1,6 +1,4 @@
-/// Git commands, review, FIM edit, sub-agents, checklist, and test runner.
-///
-/// Async + sync helpers consumed by the DscHandler dispatcher in mod.rs.
+/// Review, FIM edit, sub-agents, checklist, tests, and shell tools.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -10,148 +8,10 @@ use chrono::Utc;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-use crate::tools::{cwd_join, ToolCtx};
-
-// ── Git read tools ────────────────────────────────────────────
-
-pub(crate) fn exec_git_log(ctx: &ToolCtx, args: &str) -> String {
-    let v: Value = serde_json::from_str(args).unwrap_or_default();
-    let max_count = v["max_count"].as_u64().unwrap_or(20).min(100);
-    let path = v["path"].as_str().unwrap_or("");
-    let mut cmd = std::process::Command::new("git");
-    cmd.args(["log", "--oneline", "-n", &max_count.to_string()]);
-    if !path.is_empty() { cmd.arg(path); }
-    cmd.current_dir(&ctx.cwd);
-    match cmd.output() {
-        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).to_string(),
-        Ok(o) => format!("git log failed: {}", String::from_utf8_lossy(&o.stderr)),
-        Err(e) => format!("git log error: {e}"),
-    }
-}
-
-pub(crate) fn exec_git_show(ctx: &ToolCtx, args: &str) -> String {
-    let v: Value = serde_json::from_str(args).unwrap_or_default();
-    let rev = v["rev"].as_str().unwrap_or("");
-    if rev.is_empty() { return "error: no rev provided".to_string(); }
-    let output = std::process::Command::new("git")
-        .args(["show", "--stat", "--patch", rev])
-        .current_dir(&ctx.cwd)
-        .output();
-    match output {
-        Ok(o) if o.status.success() => {
-            let mut s = String::from_utf8_lossy(&o.stdout).to_string();
-            if s.len() > 8000 { s = format!("{}... (truncated, {} total)", &s[..8000], s.len()); }
-            s
-        }
-        Ok(o) => format!("git show failed: {}", String::from_utf8_lossy(&o.stderr)),
-        Err(e) => format!("git show error: {e}"),
-    }
-}
-
-pub(crate) fn exec_git_blame(ctx: &ToolCtx, args: &str) -> String {
-    let v: Value = serde_json::from_str(args).unwrap_or_default();
-    let path = v["path"].as_str().unwrap_or("");
-    if path.is_empty() { return "error: no path provided".to_string(); }
-    let full_path = cwd_join(ctx, path);
-    let start = v["start_line"].as_u64().unwrap_or(1).max(1);
-    let max_lines = v["max_lines"].as_u64().unwrap_or(200).min(1000);
-    let end = start + max_lines - 1;
-    match std::process::Command::new("git")
-        .args(["blame", &format!("-L{start},{end}"), "--", &full_path.to_string_lossy()])
-        .current_dir(&ctx.cwd)
-        .output()
-    {
-        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).to_string(),
-        Ok(o) => format!("git blame failed: {}", String::from_utf8_lossy(&o.stderr)),
-        Err(e) => format!("git blame error: {e}"),
-    }
-}
-
-// ── Git write tools ───────────────────────────────────────────
-
-pub(crate) fn exec_git_status(ctx: &ToolCtx, args: &str) -> String {
-    let v: Value = serde_json::from_str(args).unwrap_or_default();
-    let path = v["path"].as_str().unwrap_or("");
-    let mut cmd = std::process::Command::new("git");
-    cmd.args(["status", "--short", "--branch"]);
-    if !path.is_empty() { cmd.arg(path); }
-    cmd.current_dir(&ctx.cwd);
-    match cmd.output() {
-        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).trim().to_string(),
-        Ok(o) => format!("git status failed: {}", String::from_utf8_lossy(&o.stderr)),
-        Err(e) => format!("git status error: {e}"),
-    }
-}
-
-pub(crate) fn exec_git_diff(ctx: &ToolCtx, args: &str) -> String {
-    let v: Value = serde_json::from_str(args).unwrap_or_default();
-    let path = v["path"].as_str().unwrap_or("");
-    let cached = v["cached"].as_bool().unwrap_or(false);
-    let mut cmd = std::process::Command::new("git");
-    cmd.arg("diff");
-    if cached { cmd.arg("--cached"); }
-    if !path.is_empty() { cmd.arg(path); }
-    cmd.current_dir(&ctx.cwd);
-    match cmd.output() {
-        Ok(o) if o.status.success() => {
-            let out = String::from_utf8_lossy(&o.stdout).to_string();
-            if out.is_empty() { "no changes".to_string() } else { out }
-        }
-        Ok(o) => format!("git diff failed: {}", String::from_utf8_lossy(&o.stderr)),
-        Err(e) => format!("git diff error: {e}"),
-    }
-}
-
-pub(crate) fn exec_git_add(ctx: &ToolCtx, args: &str) -> String {
-    let v: Value = serde_json::from_str(args).unwrap_or_default();
-    let path = v["path"].as_str().unwrap_or(".");
-    match std::process::Command::new("git")
-        .args(["add", path])
-        .current_dir(&ctx.cwd)
-        .output()
-    {
-        Ok(o) if o.status.success() => format!("staged {path}"),
-        Ok(o) => format!("git add failed: {}", String::from_utf8_lossy(&o.stderr)),
-        Err(e) => format!("git add error: {e}"),
-    }
-}
-
-pub(crate) fn exec_git_commit(ctx: &ToolCtx, args: &str) -> String {
-    let v: Value = serde_json::from_str(args).unwrap_or_default();
-    let msg = v["message"].as_str().unwrap_or("");
-    if msg.is_empty() { return "error: no commit message".to_string(); }
-    match std::process::Command::new("git")
-        .args(["commit", "-m", msg])
-        .current_dir(&ctx.cwd)
-        .output()
-    {
-        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).trim().to_string(),
-        Ok(o) => format!("commit failed: {}", String::from_utf8_lossy(&o.stderr)),
-        Err(e) => format!("commit error: {e}"),
-    }
-}
-
-pub(crate) fn exec_git_push(ctx: &ToolCtx, args: &str) -> String {
-    let v: Value = serde_json::from_str(args).unwrap_or_default();
-    let remote = v["remote"].as_str().unwrap_or("origin");
-    let branch = v["branch"].as_str().unwrap_or("");
-    let mut cmd = std::process::Command::new("git");
-    cmd.args(["push", remote]);
-    if !branch.is_empty() { cmd.arg(branch); }
-    cmd.current_dir(&ctx.cwd);
-    match cmd.output() {
-        Ok(o) if o.status.success() => {
-            let out = String::from_utf8_lossy(&o.stdout).trim().to_string();
-            if out.is_empty() { "pushed successfully".to_string() } else { out }
-        }
-        Ok(o) => format!("push failed: {}", String::from_utf8_lossy(&o.stderr)),
-        Err(e) => format!("push error: {e}"),
-    }
-}
+use crate::tools::ToolCtx;
+use crate::api::{resolve_api_key, resolve_base_url};
 
 // ── Review tool ───────────────────────────────────────────────
-
-use crate::api::{resolve_api_key, resolve_base_url};
 
 pub(crate) async fn exec_review(ctx: &ToolCtx, args: &str) -> String {
     let v: Value = serde_json::from_str(args).unwrap_or_default();
@@ -482,11 +342,62 @@ pub(crate) async fn exec_test_runner(ctx: &ToolCtx, args: &str) -> String {
 
 // ── User input tool ───────────────────────────────────────────
 
-pub(crate) async fn exec_user_input(_args: &str) -> String {
+pub(crate) async fn exec_request_user_input(_args: &str) -> String {
     eprintln!("\n\x1B[33m[Agent needs input]\x1B[0m Type your response and press Enter:");
     let mut input = String::new();
     match std::io::stdin().read_line(&mut input) {
         Ok(_) => input.trim().to_string(),
         Err(_) => "input cancelled".to_string(),
+    }
+}
+
+// ── Shell execution ───────────────────────────────────────────
+
+pub(crate) fn exec_run_shell(ctx: &ToolCtx, args: &str) -> String {
+    use crate::tools::policy_engine;
+    use codewhale_execpolicy::{AskForApproval, ExecPolicyContext};
+
+    let v: Value = serde_json::from_str(args).unwrap_or_default();
+    let cmd_str = v["command"].as_str().unwrap_or("");
+    if cmd_str.is_empty() {
+        return "error: no command".to_string();
+    }
+    let engine = policy_engine();
+    let decision = engine.check(ExecPolicyContext {
+        command: cmd_str,
+        cwd: &ctx.cwd.to_string_lossy(),
+        ask_for_approval: AskForApproval::UnlessTrusted,
+        sandbox_mode: None,
+    });
+    match decision {
+        Ok(d) if !d.allow => return format!("blocked: {}", d.reason()),
+        Ok(_) => {}
+        Err(e) => return format!("policy error: {e}"),
+    }
+    match std::process::Command::new("sh")
+        .args(["-c", cmd_str])
+        .current_dir(&ctx.cwd)
+        .output()
+    {
+        Ok(output) => {
+            let mut out = String::new();
+            if !output.stdout.is_empty() {
+                out.push_str(&String::from_utf8_lossy(&output.stdout));
+            }
+            if !output.stderr.is_empty() {
+                if !out.is_empty() {
+                    out.push('\n');
+                }
+                out.push_str(&String::from_utf8_lossy(&output.stderr));
+            }
+            if out.len() > 10000 {
+                out = format!("{}... (truncated, {} total)", &out[..10000], out.len());
+            }
+            if !output.status.success() {
+                out = format!("exit code {}: {}", output.status.code().unwrap_or(-1), out);
+            }
+            out
+        }
+        Err(e) => format!("exec error: {e}"),
     }
 }

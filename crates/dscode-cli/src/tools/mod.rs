@@ -1,10 +1,12 @@
 /// Tool definitions and execution using CodeWhale's tool framework.
 ///
 /// Core module: dispatcher, specs, registry, public API, and security policy.
-/// Sub-modules: file_tools, git_agent.
+/// Sub-modules: file, git, search, agent.
 
-pub mod file_tools;
-pub mod git_agent;
+pub mod file;
+pub mod git;
+pub mod search;
+pub mod agent;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -62,35 +64,43 @@ impl ToolHandler for DscHandler {
         };
 
         let result = match invocation.tool_name.as_str() {
-            "read_file"        => file_tools::exec_read_file(&self.ctx, &args),
-            "write_file"       => file_tools::exec_write_file(&self.ctx, &args),
-            "edit_file"        => file_tools::exec_edit_file(&self.ctx, &args),
-            "run_shell"        => file_tools::exec_run_shell(&self.ctx, &args),
-            "search_code"      => file_tools::exec_search_code(&self.ctx, &args),
-            "list_files"       => file_tools::exec_list_files(&self.ctx, &args),
-            "web_search"       => file_tools::exec_web_search(&self.ctx, &args),
-            "fetch_url"        => file_tools::exec_fetch_url(&self.ctx, &args),
-            "file_search"      => file_tools::exec_file_search(&self.ctx, &args),
-            "apply_patch"      => file_tools::exec_apply_patch(&self.ctx, &args),
-            "git_log"          => git_agent::exec_git_log(&self.ctx, &args),
-            "git_show"         => git_agent::exec_git_show(&self.ctx, &args),
-            "git_blame"        => git_agent::exec_git_blame(&self.ctx, &args),
-            "git_status"       => git_agent::exec_git_status(&self.ctx, &args),
-            "git_diff"         => git_agent::exec_git_diff(&self.ctx, &args),
-            "git_add"          => git_agent::exec_git_add(&self.ctx, &args),
-            "git_commit"       => git_agent::exec_git_commit(&self.ctx, &args),
-            "git_push"         => git_agent::exec_git_push(&self.ctx, &args),
-            "review"           => git_agent::exec_review(&self.ctx, &args).await,
-            "fim_edit"         => git_agent::exec_fim_edit(&self.ctx, &args).await,
-            "agent_open"       => git_agent::exec_agent_open(&self.ctx, &args).await,
-            "agent_eval"       => git_agent::exec_agent_eval(&args).await,
-            "agent_close"      => git_agent::exec_agent_close(&args).await,
-            "checklist_write"  => git_agent::exec_checklist_write(&args),
-            "checklist_add"    => git_agent::exec_checklist_add(&args),
-            "checklist_update" => git_agent::exec_checklist_update(&args),
-            "checklist_list"   => git_agent::exec_checklist_list(),
-            "test_runner"      => git_agent::exec_test_runner(&self.ctx, &args).await,
-            "request_user_input" => git_agent::exec_user_input(&args).await,
+            // File tools
+            "read_file"        => file::exec_read_file(&self.ctx, &args),
+            "write_file"       => file::exec_write_file(&self.ctx, &args),
+            "edit_file"        => file::exec_edit_file(&self.ctx, &args),
+            "list_files"       => file::exec_list_files(&self.ctx, &args),
+            "apply_patch"      => file::exec_apply_patch(&self.ctx, &args),
+
+            // Git tools
+            "git_log"          => git::exec_git_log(&self.ctx, &args),
+            "git_show"         => git::exec_git_show(&self.ctx, &args),
+            "git_blame"        => git::exec_git_blame(&self.ctx, &args),
+            "git_status"       => git::exec_git_status(&self.ctx, &args),
+            "git_diff"         => git::exec_git_diff(&self.ctx, &args),
+            "git_add"          => git::exec_git_add(&self.ctx, &args),
+            "git_commit"       => git::exec_git_commit(&self.ctx, &args),
+            "git_push"         => git::exec_git_push(&self.ctx, &args),
+
+            // Search tools
+            "search_code"      => search::exec_search_code(&self.ctx, &args),
+            "file_search"      => search::exec_file_search(&self.ctx, &args),
+            "web_search"       => search::exec_web_search(&self.ctx, &args),
+            "fetch_url"        => search::exec_fetch_url(&self.ctx, &args),
+
+            // Agent & System tools
+            "review"           => agent::exec_review(&self.ctx, &args).await,
+            "fim_edit"         => agent::exec_fim_edit(&self.ctx, &args).await,
+            "agent_open"       => agent::exec_agent_open(&self.ctx, &args).await,
+            "agent_eval"       => agent::exec_agent_eval(&args).await,
+            "agent_close"      => agent::exec_agent_close(&args).await,
+            "checklist_write"  => agent::exec_checklist_write(&args),
+            "checklist_add"    => agent::exec_checklist_add(&args),
+            "checklist_update" => agent::exec_checklist_update(&args),
+            "checklist_list"   => agent::exec_checklist_list(),
+            "test_runner"      => agent::exec_test_runner(&self.ctx, &args).await,
+            "request_user_input" => agent::exec_request_user_input(&args).await,
+            "run_shell"        => agent::exec_run_shell(&self.ctx, &args),
+
             _ => format!("unknown tool: {}", invocation.tool_name),
         };
 
@@ -479,7 +489,7 @@ fn tool_specs() -> Vec<ToolSpec> {
 
 // ── Registry (lazy, thread-safe) ──────────────────────────────
 
-use std::sync::OnceLock;
+pub(super) use std::sync::OnceLock;
 
 fn global_registry() -> &'static ToolRegistry {
     static REGISTRY: OnceLock<ToolRegistry> = OnceLock::new();
@@ -592,7 +602,7 @@ pub async fn execute_tool(
 
 // ── Command safety policy ─────────────────────────────────────
 
-fn policy_engine() -> &'static ExecPolicyEngine {
+pub(crate) fn policy_engine() -> &'static ExecPolicyEngine {
     static ENGINE: OnceLock<ExecPolicyEngine> = OnceLock::new();
     ENGINE.get_or_init(|| {
         let denied = vec![
