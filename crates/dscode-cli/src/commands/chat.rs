@@ -411,6 +411,16 @@ fn persist_session(store: &Option<StateStore>, thread_id: &str, model: &str, mes
     });
     thread.updated_at = now;
     thread.preview = preview;
+    // Auto-name: use first user message (truncated to 40 chars) after 2+ messages
+    if thread.name.is_none() && messages.len() >= 2 {
+        if let Some(first_user) = messages.iter().find(|m| m.role == "user") {
+            let name: String = first_user.content.chars().take(40).collect();
+            let name = name.trim().to_string();
+            if !name.is_empty() {
+                thread.name = Some(name);
+            }
+        }
+    }
     let _ = store.upsert_thread(&thread);
 }
 
