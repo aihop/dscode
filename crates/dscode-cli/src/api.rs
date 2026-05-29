@@ -588,7 +588,8 @@ pub async fn call_stream(
                 }
                 // Content
                 if let Some(delta) = parsed["choices"][0]["delta"]["content"].as_str() {
-                    if showed_reasoning { showed_reasoning = false; eprintln!(); }
+                    // Only close reasoning when we get actual content (not empty delta after tool calls)
+                    if showed_reasoning && !delta.is_empty() { showed_reasoning = false; eprintln!(); }
                     full.push_str(delta);
                     usage.tokens_out += delta.len() as u64 / 4;
                     // Track column for narrow terminal wrapping + clear residual chars
@@ -607,7 +608,9 @@ pub async fn call_stream(
                             }
                         }
                     }
-                    print!("{delta}");
+                    // Lightweight inline markdown → ANSI on each delta
+                    let rendered = md_inline(delta);
+                    print!("{rendered}");
                     io::stdout().flush().ok();
                 }
                 // Non-streaming tool_calls (from finish_reason)
@@ -630,6 +633,124 @@ pub async fn call_stream(
     println!();
     let final_calls: Vec<ToolCall> = tool_calls.into_values().filter(|t| !t.name.is_empty()).collect();
     Ok(StreamResult { content: full, reasoning_content: reasoning, tool_calls: final_calls, usage })
+}
+
+/// Lightweight inline Markdown → ANSI for streaming deltas.
+/// Handles **bold**, *italic*, `code` — no newlines added, safe for fragments.
+fn md_inline(text: &str) -> String {
+    let mut s = text.to_string();
+    s = replace_pattern(&s, "**", "\x1B[1m", "\x1B[22m");
+    s = replace_pattern(&s, "*", "\x1B[3m", "\x1B[23m");
+    s = replace_inline_code(&s);
+    s
+}
+
+/// Full Markdown → ANSI rendering for display of complete messages.
+/// Supports: **bold**, *italic*, `code`, # headings, - lists, ```blocks```, > quotes.
+/// Supports: **bold**, *italic*, `code`, # headings, - lists, ```blocks```, > quotes.
+pub fn md_to_ansi(text: &str) -> String {
+    // Process line by line for block-level formatting
+    let mut out = String::new();
+    let mut in_code_block = false;
+    let mut code_buf = String::new();
+
+    for line in text.lines() {
+        if line.trim_start().starts_with("```") {
+            if in_code_block {
+                // End code block
+                out.push_str(&format!("\x1B[90m─── code ───\x1B[0m\n{}\n\x1B[90m────────────\x1B[0m\n", code_buf));
+                code_buf.clear();
+                in_code_block = false;
+            } else {
+                in_code_block = true;
+            }
+            continue;
+        }
+        if in_code_block {
+            code_buf.push_str(line);
+            code_buf.push('\n');
+            continue;
+        }
+
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            out.push('\n');
+            continue;
+        }
+
+        // Headings
+        if let Some(rest) = trimmed.strip_prefix("# ") {
+            out.push_str(&format!("\x1B[1;34m{}\x1B[0m\n", rest));
+            continue;
+        }
+        if let Some(rest) = trimmed.strip_prefix("## ") {
+            out.push_str(&format!("\x1B[1;36m{}\x1B[0m\n", rest));
+            continue;
+        }
+        if let Some(rest) = trimmed.strip_prefix("### ") {
+            out.push_str(&format!("\x1B[1m{}\x1B[0m\n", rest));
+            continue;
+        }
+
+        // Block quotes
+        if let Some(rest) = trimmed.strip_prefix("> ") {
+            out.push_str(&format!("\x1B[90m> {}\x1B[0m\n", rest));
+            continue;
+        }
+
+        // List items
+        let prefix = if trimmed.starts_with("- ") { "  • " } else if trimmed.starts_with("* ") { "  • " } else if trimmed.chars().next().map_or(false, |c| c.is_ascii_digit()) && trimmed.contains(". ") { "" } else { "" };
+
+        // Inline formatting
+        let mut inline = if !prefix.is_empty() { format!("{}{}", prefix, &trimmed[2..]) } else { line.to_string() };
+        // **bold**
+        inline = replace_pattern(&inline, "**", "\x1B[1m", "\x1B[22m");
+        // *italic*
+        inline = replace_pattern(&inline, "*", "\x1B[3m", "\x1B[23m");
+        // `code`
+        inline = replace_inline_code(&inline);
+
+        out.push_str(&inline);
+        out.push('\n');
+    }
+
+    // Close unclosed code block
+    if in_code_block && !code_buf.is_empty() {
+        out.push_str(&format!("\x1B[90m─── code ───\x1B[0m\n{}\n\x1B[90m────────────\x1B[0m\n", code_buf));
+    }
+
+    out
+}
+
+fn replace_pattern(text: &str, delim: &str, open: &str, close: &str) -> String {
+    let mut result = String::new();
+    let mut rest = text;
+    let mut toggle = true;
+    while let Some(pos) = rest.find(delim) {
+        result.push_str(&rest[..pos]);
+        if toggle { result.push_str(open); } else { result.push_str(close); }
+        toggle = !toggle;
+        rest = &rest[pos + delim.len()..];
+    }
+    result.push_str(rest);
+    // Close unclosed
+    if !toggle { result.push_str(close); }
+    result
+}
+
+fn replace_inline_code(text: &str) -> String {
+    let mut result = String::new();
+    let mut rest = text;
+    let mut toggle = true;
+    while let Some(pos) = rest.find('`') {
+        result.push_str(&rest[..pos]);
+        if toggle { result.push_str("\x1B[36m"); } else { result.push_str("\x1B[0m"); }
+        toggle = !toggle;
+        rest = &rest[pos + 1..];
+    }
+    result.push_str(rest);
+    if !toggle { result.push_str("\x1B[0m"); }
+    result
 }
 
 /// Helper: run a command and return stdout+stderr as string
