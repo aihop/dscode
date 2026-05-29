@@ -62,6 +62,9 @@ pub struct UsageInfo {
     pub model: String,
     pub tokens_out: u64,
     pub reasoning_tokens: u64,
+    pub prompt_tokens: u64,
+    pub cache_hit_tokens: u64,
+    pub cache_miss_tokens: u64,
 }
 
 #[derive(Debug)]
@@ -160,10 +163,13 @@ pub async fn call_stream(
                 l => match l.strip_prefix("data: ") { Some(s) => s, None => continue },
             };
             if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(data) {
-                // Exact usage
+                // Exact usage + cache stats
                 if let Some(u) = parsed.get("usage") {
                     if let Some(t) = u["completion_tokens"].as_u64() { usage.tokens_out = t; }
                     if let Some(t) = u["completion_tokens_details"]["reasoning_tokens"].as_u64() { usage.reasoning_tokens = t; }
+                    if let Some(t) = u["prompt_tokens"].as_u64() { usage.prompt_tokens = t; }
+                    if let Some(t) = u["prompt_cache_hit_tokens"].as_u64() { usage.cache_hit_tokens = t; }
+                    if let Some(t) = u["prompt_cache_miss_tokens"].as_u64() { usage.cache_miss_tokens = t; }
                 }
                 // Reasoning — dimmed gray on stderr, no noisy [reasoning] tags
                 if let Some(rt) = parsed["choices"][0]["delta"]["reasoning_content"].as_str() {
@@ -586,10 +592,14 @@ pub async fn call_nonstream(
         return Err(format!("API {s}: {t}"));
     }
     let data: serde_json::Value = response.json().await.map_err(|e| format!("parse: {e}"))?;
+    let u = &data["usage"];
     let usage = UsageInfo {
         model: model.to_string(),
-        tokens_out: data["usage"]["completion_tokens"].as_u64().unwrap_or(0),
-        reasoning_tokens: data["usage"]["completion_tokens_details"]["reasoning_tokens"].as_u64().unwrap_or(0),
+        tokens_out: u["completion_tokens"].as_u64().unwrap_or(0),
+        reasoning_tokens: u["completion_tokens_details"]["reasoning_tokens"].as_u64().unwrap_or(0),
+        prompt_tokens: u["prompt_tokens"].as_u64().unwrap_or(0),
+        cache_hit_tokens: u["prompt_cache_hit_tokens"].as_u64().unwrap_or(0),
+        cache_miss_tokens: u["prompt_cache_miss_tokens"].as_u64().unwrap_or(0),
     };
     let content = data["choices"][0]["message"]["content"].as_str().unwrap_or("(no response)").to_string();
     print!("{}", md_to_ansi(&content));

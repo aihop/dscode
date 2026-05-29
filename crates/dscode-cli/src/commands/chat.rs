@@ -244,7 +244,12 @@ pub async fn run(args: &ChatArgs) {
 
                         // Execute tools
                         for tc in &stream_res.tool_calls {
-                            let result = api::execute_tool(tc).await;
+                            let mut result = api::execute_tool(tc).await;
+                            // Truncate oversized tool results to save tokens
+                            const MAX_TOOL_CHARS: usize = 4000;
+                            if result.len() > MAX_TOOL_CHARS {
+                                result = format!("{}... (truncated, {} total)", &result[..MAX_TOOL_CHARS], result.len());
+                            }
                             api_msgs.push(serde_json::json!({
                                 "role": "tool",
                                 "tool_call_id": tc.id,
@@ -254,7 +259,12 @@ pub async fn run(args: &ChatArgs) {
                                 eprintln!("─ tool: {}(..) → {} chars", tc.name, result.len());
                             }
                         }
-                        if narrow { eprintln!("─ {:.0} tok, continuing...", stream_res.usage.tokens_out); }
+                        if narrow {
+                            let cache_pct = if stream_res.usage.prompt_tokens > 0 {
+                                (stream_res.usage.cache_hit_tokens as f64 / stream_res.usage.prompt_tokens as f64 * 100.0) as u64
+                            } else { 0 };
+                            eprintln!("─ {:.0} tok ({}% cached), continuing...", stream_res.usage.tokens_out, cache_pct);
+                        }
                         continue; // next agent round
                     } else {
                         // Pure text response
@@ -425,21 +435,25 @@ fn terminal_width() -> u16 {
     80
 }
 
-/// Load AGENT.md from project root if it exists
+/// Load AGENT.md from project root — cached once per session.
 fn load_agent_md() -> Option<String> {
-    let cwd = std::env::current_dir().ok()?;
-    for name in &["AGENT.md", "AGENTS.md", "CLAUDE.md"] {
-        let path = cwd.join(name);
-        if path.exists() {
-            if let Ok(content) = std::fs::read_to_string(&path) {
-                let trimmed = content.trim();
-                if !trimmed.is_empty() {
-                    return Some(format!("Project rules from {}:\n{}", name, trimmed));
+    use std::sync::OnceLock;
+    static CACHE: OnceLock<Option<String>> = OnceLock::new();
+    CACHE.get_or_init(|| {
+        let cwd = std::env::current_dir().ok()?;
+        for name in &["AGENT.md", "AGENTS.md", "CLAUDE.md"] {
+            let path = cwd.join(name);
+            if path.exists() {
+                if let Ok(content) = std::fs::read_to_string(&path) {
+                    let trimmed = content.trim();
+                    if !trimmed.is_empty() {
+                        return Some(format!("Project rules from {}:\n{}", name, trimmed));
+                    }
                 }
             }
         }
-    }
-    None
+        None
+    }).clone()
 }
 
 /// Detect current git branch name for prompt display
