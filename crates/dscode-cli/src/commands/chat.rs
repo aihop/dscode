@@ -104,14 +104,21 @@ pub async fn run(args: &ChatArgs) {
         let _ = rl.load_history(&hist_path);
     }
 
-    // Detect git branch for prompt
+    // Detect git branch and project dir for prompt
     let git_branch = get_git_branch();
+    let project_dir = std::env::current_dir().ok()
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()));
 
     loop {
-        let branch_tag = if let Some(ref b) = git_branch {
-            if narrow { format!("\x1B[35m{b}\x1B[0m ") } else { format!("\x1B[35m{b}\x1B[0m ") }
-        } else { String::new() };
-        let prompt = format!("{branch_tag}> ");
+        let msg_count = messages.len();
+        let dir_tag = project_dir.as_deref().unwrap_or("");
+        let branch_tag = git_branch.as_deref().unwrap_or("");
+        let prompt = if narrow {
+            if !branch_tag.is_empty() { format!("\x1B[35m{branch_tag}\x1B[0m [{msg_count}]> ") }
+            else { format!("[{msg_count}]> ") }
+        } else {
+            format!("\x1B[36m{dir_tag}\x1B[0m \x1B[35m{branch_tag}\x1B[0m [{msg_count}]> ")
+        };
 
         let input = if let Some(ref mut rl) = rl {
             match rl.readline(&prompt) {
