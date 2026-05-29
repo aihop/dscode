@@ -195,6 +195,20 @@ pub fn tool_definitions() -> Vec<serde_json::Value> {
         serde_json::json!({
             "type": "function",
             "function": {
+                "name": "git_commit",
+                "description": "Stage all changes and create a git commit with the given message. Use git_status first to review what will be committed.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "message": {"type": "string", "description": "Commit message"}
+                    },
+                    "required": ["message"]
+                }
+            }
+        }),
+        serde_json::json!({
+            "type": "function",
+            "function": {
                 "name": "git_log",
                 "description": "Show recent git commit history.",
                 "parameters": {
@@ -342,6 +356,15 @@ pub fn execute_tool(tc: &ToolCall) -> String {
             let path = args["path"].as_str().unwrap_or("");
             if path.is_empty() { run_cmd(&cwd, "git", &["diff"]) }
             else { run_cmd(&cwd, "git", &["diff", "--", path]) }
+        }
+        "git_commit" => {
+            let args: serde_json::Value = serde_json::from_str(&tc.arguments).unwrap_or_default();
+            let msg = args["message"].as_str().unwrap_or("");
+            if msg.is_empty() { return "error: no commit message".to_string(); }
+            // Stage all, then commit
+            let add = run_cmd(&cwd, "git", &["add", "-A"]);
+            let commit = run_cmd(&cwd, "git", &["commit", "-m", msg]);
+            format!("staged:\n{add}\n\ncommit:\n{commit}")
         }
         "git_log" => {
             let args: serde_json::Value = serde_json::from_str(&tc.arguments).unwrap_or_default();
