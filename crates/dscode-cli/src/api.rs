@@ -542,7 +542,6 @@ pub async fn call_stream(
 
     let mut full = String::new();
     let mut reasoning = String::new();
-    let mut showed_reasoning = false;
     let mut stream = response.bytes_stream();
     let mut col: u16 = 0;
     let max_col = terminal_width.saturating_sub(2);
@@ -567,12 +566,14 @@ pub async fn call_stream(
                     if let Some(t) = u["completion_tokens"].as_u64() { usage.tokens_out = t; }
                     if let Some(t) = u["completion_tokens_details"]["reasoning_tokens"].as_u64() { usage.reasoning_tokens = t; }
                 }
-                // Reasoning
+                // Reasoning — dimmed gray on stderr, no noisy [reasoning] tags
                 if let Some(rt) = parsed["choices"][0]["delta"]["reasoning_content"].as_str() {
                     usage.reasoning_tokens += rt.len() as u64 / 4;
                     reasoning.push_str(rt);
-                    if !showed_reasoning { showed_reasoning = true; eprint!("\n[reasoning] "); }
-                    io::stderr().flush().ok();
+                    if !rt.is_empty() {
+                        eprint!("\x1B[90m{}\x1B[0m", rt);
+                        io::stderr().flush().ok();
+                    }
                 }
                 // Tool calls (streaming deltas)
                 if let Some(tc_array) = parsed["choices"][0]["delta"]["tool_calls"].as_array() {
@@ -588,8 +589,6 @@ pub async fn call_stream(
                 }
                 // Content
                 if let Some(delta) = parsed["choices"][0]["delta"]["content"].as_str() {
-                    // Only close reasoning when we get actual content (not empty delta after tool calls)
-                    if showed_reasoning && !delta.is_empty() { showed_reasoning = false; eprintln!(); }
                     full.push_str(delta);
                     usage.tokens_out += delta.len() as u64 / 4;
                     // Track column for narrow terminal wrapping + clear residual chars
@@ -629,7 +628,6 @@ pub async fn call_stream(
         }
     }
 
-    if showed_reasoning { eprintln!(); }
     println!();
     let final_calls: Vec<ToolCall> = tool_calls.into_values().filter(|t| !t.name.is_empty()).collect();
     Ok(StreamResult { content: full, reasoning_content: reasoning, tool_calls: final_calls, usage })
