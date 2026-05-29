@@ -188,7 +188,14 @@ pub async fn run(args: &ChatArgs) {
         let tools_list = if args.plain { vec![] } else { api::tool_definitions() };
         let active_tools: Option<&[serde_json::Value]> = if tools_list.is_empty() { None } else { Some(&tools_list) };
 
+        // Auto-inject AGENT.md as system prompt if it exists in project root
+        let agent_prompt = load_agent_md();
         let mut api_msgs: Vec<serde_json::Value> = Vec::new();
+        if let Some(ref ap) = agent_prompt {
+            if api_msgs.is_empty() || api_msgs[0]["role"] != "system" {
+                api_msgs.push(serde_json::json!({"role": "system", "content": ap}));
+            }
+        }
         if let Some(sp) = &args.system { if !sp.is_empty() { api_msgs.push(serde_json::json!({"role": "system", "content": sp})); } }
         api_msgs.extend(messages.iter().map(|m| serde_json::json!({"role": m.role, "content": m.content})));
 
@@ -353,6 +360,23 @@ fn terminal_width() -> u16 {
         }
     }
     80
+}
+
+/// Load AGENT.md from project root if it exists
+fn load_agent_md() -> Option<String> {
+    let cwd = std::env::current_dir().ok()?;
+    for name in &["AGENT.md", "AGENTS.md", "CLAUDE.md"] {
+        let path = cwd.join(name);
+        if path.exists() {
+            if let Ok(content) = std::fs::read_to_string(&path) {
+                let trimmed = content.trim();
+                if !trimmed.is_empty() {
+                    return Some(format!("Project rules from {}:\n{}", name, trimmed));
+                }
+            }
+        }
+    }
+    None
 }
 
 /// Detect current git branch name for prompt display

@@ -82,7 +82,6 @@ cargo test -p dscode
 RUST_LOG=debug dscode chat
 
 # Lint
-cargo clippy -- -D warnings
 ```
 
 ### Platform Targets
@@ -134,7 +133,7 @@ Types: `feat `fix`, `refactor`, `docs`, `test`, `chore`, `perf`, `style`
 | 4 | `run_shell` | Execute shell command | `std::process::Command`, dangerous-cmd blocklist |
 | 5 | `search_code` | grep codebase | `grep -rn` subprocess |
 | 6 | `list_files` | List directory contents | `std::fs::read_dir` |
-| 7 | `git_status | Working tree status | `git status --short` |
+| 7 | `git_status` | Working tree status | `git status --short` |
 | 8 | `git_diff` | Unstaged changes diff | `git diff` |
 | 9 | `git_commit` Stage all + commit | `git add -A && git commit -m` |
 | 10 | `git_log` | Recent commit history | `git log --oneline -n <count>` |
@@ -200,6 +199,6 @@ git tag v0.1.0 && git push origin v0.1.0   # Triggers CI build + GitHub Release
 ## Links
 
 - **Website:** <https://dscode.org>
-- **Repository:** <https://github/aihop/dscode>
+- **Repository:** <https://github.com/aihop/dscode>
 - **Engine:** dscode (this project)
 - **DeepSeek API:** <https://api.deepseek.com/beta>
