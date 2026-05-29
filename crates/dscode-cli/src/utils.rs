@@ -28,5 +28,5 @@ pub fn terminal_width() -> u16 {
 
 /// Check if terminal is considered "narrow" (<= 80 chars).
 pub fn is_narrow_terminal() -> bool {
-    terminal_width() <= 80
+    terminal_width() <= 72
 }

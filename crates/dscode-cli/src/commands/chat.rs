@@ -291,7 +291,18 @@ You are running directly in the project root directory. Always use relative path
         };
 
         match engine.run_loop(&options, history).await {
-            Ok((new_api_msgs, _usage)) => {
+            Ok((new_api_msgs, usage)) => {
+                if usage.tokens_out > 0 {
+                    if narrow {
+                        eprintln!("\x1B[90m─ usage: {:.0} tok (reasoning: {:.0})\x1B[0m", usage.tokens_out, usage.reasoning_tokens);
+                    } else {
+                        eprint!("\x1B[90m─ {:.0} tok (reasoning: {:.0})\x1B[0m", usage.tokens_out, usage.reasoning_tokens);
+                        if usage.cache_hit_tokens > 0 {
+                            eprint!(" cache: {:.0}", usage.cache_hit_tokens);
+                        }
+                        eprintln!();
+                    }
+                }
                 // The first message is system, the rest are user/assistant/tool messages.
                 // We want to find the NEW assistant/tool messages and update our `messages` vector.
                 // Actually, let's just extract all assistant messages from the result that are NOT in our `messages` yet.

@@ -96,7 +96,7 @@ pub(crate) async fn exec_fim_edit(ctx: &ToolCtx, args: &str) -> String {
     let client = reqwest::Client::new();
     let url = format!("{}/completions", base_url.trim_end_matches('/'));
     let body = json!({
-        "model": "deepseek-v4-flash",
+        "model": crate::api::resolve_model_name(&crate::api::default_model(false)),
         "prompt": prompt,
         "suffix": suffix,
         "max_tokens": max_tokens,
@@ -148,7 +148,7 @@ async fn run_sub_agent(
     };
 
     let options = AgentOptions {
-        model: "deepseek-v4-pro".to_string(),
+        model: crate::api::resolve_model_name(&crate::api::default_model(false)),
         system_prompt: "You are a helpful sub-agent. Focus on the task provided.".to_string(),
         tools: Some(crate::api::tool_definitions()),
         max_rounds: 8,
