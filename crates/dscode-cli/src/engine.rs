@@ -10,6 +10,7 @@ pub struct AgentOptions {
     pub narrow: bool,
     pub silent: bool,
     pub approval_mode: bool,
+    pub allow_mid_input: bool,
     pub terminal_width: u16,
     pub cwd: std::path::PathBuf,
 }
@@ -175,10 +176,17 @@ impl AgentEngine {
                     if !options.silent && !options.narrow {
                         println!("\x1B[90m─ exp: {}→full tools\x1B[0m", crate::tools::CORE_TOOL_NAMES.len());
                     }
-                }
-                // Loop continues to let model see tool results
-            } else {
-                // No more tool calls, we're done with this turn
+                  }
+                  // ── Mid-task input checkpoint ──
+                  // After executing tools, user can inject additional instructions
+                  // before the model sees tool results.
+                  if !options.silent && options.allow_mid_input {
+                      if let Some(extra) = prompt_mid_input(options.narrow) {
+                          api_msgs.push(json!({"role": "user", "content": extra}));
+                      }
+                  }
+                  // Loop continues to let model see tool results
+              } else {                // No more tool calls, we're done with this turn
                 api_msgs.push(assistant_msg);
                 break;
             }
@@ -241,6 +249,37 @@ fn confirm_tool(name: &str, args: &str) -> bool {
     io::stdin().read_line(&mut input).ok();
     let trimmed = input.trim().to_lowercase();
     trimmed == "n" || trimmed == "no"
+}
+
+/// After tool execution, prompt user if they want to inject additional instructions.
+/// Returns `Some(text)` if user typed input, `None` if they just pressed Enter.
+fn prompt_mid_input(narrow: bool) -> Option<String> {
+    if narrow {
+        eprint!("\x1B[90m[回车=继续 /<指令>=插话]\x1B[0m ");
+    } else {
+        eprint!("\x1B[90m── 回车继续 | 输入 /<指令> 插话 \x1B[90m──\x1B[0m ");
+    }
+    io::stdout().flush().ok();
+
+    let mut input = String::new();
+    match io::stdin().read_line(&mut input) {
+        Ok(_) => {
+            let trimmed = input.trim().to_string();
+            if trimmed.is_empty() {
+                None // Just press Enter, continue normally
+            } else if let Some(cmd) = trimmed.strip_prefix('/') {
+                let cmd_str = cmd.trim().to_string();
+                if cmd_str.is_empty() {
+                    None // Just "/" is treated as Enter
+                } else {
+                    Some(cmd_str) // User injected /instruction
+                }
+            } else {
+                Some(trimmed) // Anything else treated as instruction
+            }
+        }
+        Err(_) => None,
+    }
 }
 
 /// Generate a one-line summary of a tool execution for user display.

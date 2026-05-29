@@ -66,17 +66,18 @@ pub async fn run(args: &RunArgs) {
     api_msgs.push(serde_json::json!({"role": "user", "content": prompt}));
 
     let engine = AgentEngine::new(client, base_url, api_key);
-    let options = AgentOptions {
-        model,
-        system_prompt: sys_content,
-        tools: tools_list,
-        max_rounds: 25,
-            narrow,
-            silent: false,
-            approval_mode: args.approve,
-            terminal_width: tw,
-            cwd: std::env::current_dir().unwrap_or_default(),    };
-
+      let options = AgentOptions {
+          model,
+          system_prompt: sys_content,
+          tools: tools_list,
+          max_rounds: 25,
+          narrow,
+          silent: false,
+          approval_mode: args.approve,
+          allow_mid_input: false,
+          terminal_width: tw,
+          cwd: std::env::current_dir().unwrap_or_default(),
+      };
     match engine.run_loop(&options, api_msgs).await {
         Ok(_) => {}
         Err(e) => { eprintln!("error: {e}"); std::process::exit(1); }
