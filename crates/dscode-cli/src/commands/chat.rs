@@ -21,8 +21,8 @@ pub struct ChatArgs {
     pub new: bool,
     #[arg(long, help = "System prompt (set once, persists in config)")]
     pub system: Option<String>,
-    #[arg(short = 't', long, help = "Enable agent tools: read/write/edit/search/list/run")]
-    pub tools: bool,
+    #[arg(long, help = "Disable tools (plain chat mode, no agent)")]
+    pub plain: bool,
     #[arg(long, help = "Disable streaming output")]
     pub no_stream: bool,
 }
@@ -156,7 +156,7 @@ pub async fn run(args: &ChatArgs) {
             if narrow { eprintln!("─ trimmed {trimmed} old msgs to save context"); }
         }
 
-        let tools_list = if args.tools { api::tool_definitions() } else { vec![] };
+        let tools_list = if args.plain { vec![] } else { api::tool_definitions() };
         let active_tools: Option<&[serde_json::Value]> = if tools_list.is_empty() { None } else { Some(&tools_list) };
 
         let mut api_msgs: Vec<serde_json::Value> = Vec::new();
