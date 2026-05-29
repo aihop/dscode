@@ -10,6 +10,7 @@ use uuid::Uuid;
 
 use crate::tools::ToolCtx;
 use crate::api::{resolve_api_key, resolve_base_url};
+use crate::engine::{AgentEngine, AgentOptions};
 
 // ── Review tool ───────────────────────────────────────────────
 
@@ -136,59 +137,37 @@ async fn run_sub_agent(
     prompt: &str, context_msgs: &[Value],
 ) -> String {
     let client = reqwest::Client::new();
-    let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
-    let mut api_msgs: Vec<Value> = if context_msgs.is_empty() {
+    let engine = AgentEngine::new(client, base_url.to_string(), api_key.to_string());
+    
+    let history: Vec<Value> = if context_msgs.is_empty() {
         vec![json!({"role": "user", "content": prompt})]
     } else {
         let mut msgs = context_msgs.to_vec();
         msgs.push(json!({"role": "user", "content": prompt}));
         msgs
     };
-    for _ in 0..8 {
-        let mut body = json!({
-            "model": "deepseek-v4-pro",
-            "messages": api_msgs,
-            "max_tokens": 4096,
-            "stream": false,
-        });
-        let tools = crate::api::tool_definitions();
-        if !tools.is_empty() { body["tools"] = Value::Array(tools); }
-        let resp = match client.post(&url)
-            .header("Authorization", format!("Bearer {api_key}"))
-            .json(&body).send().await
-        {
-            Ok(r) => r,
-            Err(e) => return format!("error: {e}"),
-        };
-        let data: Value = match resp.json().await {
-            Ok(d) => d,
-            Err(_) => return "parse error".to_string(),
-        };
-        let msg = &data["choices"][0]["message"];
-        let content = msg["content"].as_str().unwrap_or("").to_string();
-        let tool_calls = msg["tool_calls"].as_array().cloned().unwrap_or_default();
-        if tool_calls.is_empty() {
-            return if content.is_empty() { "(empty)".to_string() } else { content };
-        }
-        let mut assistant = json!({"role": "assistant", "content": content});
-        assistant["tool_calls"] = Value::Array(tool_calls.clone());
-        api_msgs.push(assistant);
-        for tc in &tool_calls {
-            let name = tc["function"]["name"].as_str().unwrap_or("");
-            let arguments = tc["function"]["arguments"].as_str().unwrap_or("{}");
-            let tool_call = crate::api::ToolCall {
-                id: tc["id"].as_str().unwrap_or("").to_string(),
-                name: name.to_string(),
-                arguments: arguments.to_string(),
-            };
-            let mut result = crate::api::execute_tool(&tool_call).await;
-            if result.len() > 4000 {
-                result = format!("{}... (truncated)", &result[..4000]);
+
+    let options = AgentOptions {
+        model: "deepseek-v4-pro".to_string(),
+        system_prompt: "You are a helpful sub-agent. Focus on the task provided.".to_string(),
+        tools: Some(crate::api::tool_definitions()),
+        max_rounds: 8,
+        narrow: false,
+        silent: true,
+        terminal_width: 80,
+    };
+
+    match engine.run_loop(&options, history).await {
+        Ok((new_msgs, _usage)) => {
+            if let Some(last) = new_msgs.last() {
+                if last["role"] == "assistant" {
+                    return last["content"].as_str().unwrap_or("").to_string();
+                }
             }
-            api_msgs.push(json!({"role": "tool", "tool_call_id": tool_call.id, "content": result}));
+            "(empty)".to_string()
         }
+        Err(e) => format!("error: {e}"),
     }
-    "max rounds reached".to_string()
 }
 
 pub(crate) async fn exec_agent_open(ctx: &ToolCtx, args: &str) -> String {

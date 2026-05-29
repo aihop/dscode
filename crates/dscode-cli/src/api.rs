@@ -115,6 +115,7 @@ pub async fn call_stream(
     messages: &[serde_json::Value],
     tools: Option<&[serde_json::Value]>,
     narrow: bool,
+    silent: bool,
     terminal_width: u16,
 ) -> Result<StreamResult, String> {
     use futures_util::StreamExt;
@@ -167,7 +168,9 @@ pub async fn call_stream(
         let chunk = match stream.next().await {
             Some(Ok(c)) => c,
             Some(Err(e)) => {
-                eprintln!("\x1B[33m\n[网络错误: {e}]\x1B[0m");
+                if !silent {
+                    eprintln!("\x1B[33m\n[网络错误: {e}]\x1B[0m");
+                }
                 break;
             }
             None => break,
@@ -181,7 +184,7 @@ pub async fn call_stream(
                 // Finish reason (diagnose truncation)
                 if let Some(fr) = parsed["choices"][0]["finish_reason"].as_str() {
                     finish_reason = Some(fr.to_string());
-                    if fr == "length" {
+                    if fr == "length" && !silent {
                         eprintln!("\x1B[33m\n[响应被 token 上上限截断]\x1B[0m");
                     }
                 }
@@ -234,7 +237,7 @@ pub async fn call_stream(
                                 }
                             }
                         }
-                        if !out.is_empty() { render::oprint(&out); io::stdout().flush().ok(); }
+                        if !out.is_empty() && !silent { render::oprint(&out); io::stdout().flush().ok(); }
                     } else {
                         // Non-narrow: batch lines, skip character-by-character iteration
                         if delta.contains('\n') {
@@ -266,7 +269,7 @@ pub async fn call_stream(
                                     line_buf.push_str(segment);
                                 }
                             }
-                            if !out.is_empty() { render::oprint(&out); io::stdout().flush().ok(); }
+                            if !out.is_empty() && !silent { render::oprint(&out); io::stdout().flush().ok(); }
                         } else {
                             // No newlines — just accumulate for the next chunk
                             line_buf.push_str(delta);
@@ -302,15 +305,15 @@ pub async fn call_stream(
     }
 
     // Flush remaining line buffer
-    if !line_buf.is_empty() {
+    if !line_buf.is_empty() && !silent {
         let flushed = render::render_line(&line_buf, in_code_block, &code_lang);
         if !flushed.is_empty() { render::oprint(&flushed); io::stdout().flush().ok(); }
     }
-    if !table_buf.is_empty() {
+    if !table_buf.is_empty() && !silent {
         let flushed = render::render_table(&table_buf);
         if !flushed.is_empty() { render::oprint(&flushed); io::stdout().flush().ok(); }
     }
-    println!();
+    if !silent { println!(); }
 
     Ok(StreamResult {
         content: full,

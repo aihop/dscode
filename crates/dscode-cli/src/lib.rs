@@ -1,5 +1,6 @@
 pub mod api;
 pub mod commands;
+pub mod engine;
 pub mod render;
 pub mod tools;
 pub mod utils;

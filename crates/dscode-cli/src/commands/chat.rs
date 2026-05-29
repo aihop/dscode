@@ -3,7 +3,8 @@
 /// Thin UX layer on top of dscode engine + shared api.rs.
 /// Session persistence via SQLite (codewhale-state).
 
-use crate::api::{self, resolve_model_name, resolve_api_key, resolve_base_url, MAX_TOOL_OUTPUT_CHARS};
+use crate::api::{self, resolve_model_name, resolve_api_key, resolve_base_url};
+use crate::engine::{AgentEngine, AgentOptions};
 use crate::utils::{is_narrow_terminal, terminal_width};
 use chrono::Utc;
 use clap::Args;
@@ -37,17 +38,6 @@ struct Message {
     created_at: i64,
 }
 
-/// Model fallback chain for API error recovery.
-const MODEL_FALLBACKS: &[(&str, &str)] = &[
-    ("deepseek-v4-pro", "deepseek-v4-flash"),
-];
-
-fn fallback_model(current: &str) -> Option<&'static str> {
-    MODEL_FALLBACKS.iter()
-        .find(|(primary, _)| *primary == current)
-        .map(|(_, fallback)| *fallback)
-}
-
 // ── LLM-based context compaction ──────────────────────────────────
 
 async fn compact_via_llm(
@@ -62,7 +52,6 @@ async fn compact_via_llm(
     if estimated < COMPACT_AT_TOKENS {
         return false;
     }
-    // Keep last 10 messages (~5 turns) fully intact
     const KEEP: usize = 10;
     if messages.len() <= KEEP + 2 {
         return false;
@@ -189,6 +178,8 @@ pub async fn run(args: &ChatArgs) {
     let project_dir = std::env::current_dir().ok()
         .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()));
 
+    let engine = AgentEngine::new(client.clone(), base_url.clone(), api_key.clone());
+
     loop {
         tw = terminal_width();
         let prompt = if narrow {
@@ -260,10 +251,8 @@ pub async fn run(args: &ChatArgs) {
         messages.push(Message { role: "user".into(), content: input, reasoning_content: None, created_at: Utc::now().timestamp() });
         compact_via_llm(&mut messages, &client, &base_url, &api_key, narrow).await;
 
-        let tools_list = if args.plain { vec![] } else { api::tool_definitions() };
-        let active_tools: Option<&[serde_json::Value]> = if tools_list.is_empty() { None } else { Some(&tools_list) };
-
-        let mut api_msgs: Vec<serde_json::Value> = Vec::new();
+        let tools_list = if args.plain { None } else { Some(api::tool_definitions()) };
+        
         let default_system = "\
 You are dscode, a mobile-first AI coding agent powered by DeepSeek.
 
@@ -282,95 +271,58 @@ You are dscode, a mobile-first AI coding agent powered by DeepSeek.
         let sys_content = if let Some(ref ap) = agent_prompt { format!("{}\n\n{}", default_system, ap) }
             else if let Some(sp) = &args.system { format!("{}\n\n{}", default_system, sp) }
             else { default_system.to_string() };
-        api_msgs.push(serde_json::json!({"role": "system", "content": sys_content}));
 
-        for m in &messages {
+        let history: Vec<serde_json::Value> = messages.iter().map(|m| {
             let mut j = serde_json::json!({"role": m.role, "content": m.content});
             if let Some(ref rc) = m.reasoning_content { j["reasoning_content"] = serde_json::Value::String(rc.clone()); }
-            api_msgs.push(j);
-        }
+            j
+        }).collect();
 
-        let max_rounds = 20;
-        let mut round = 0;
-        let mut current_model = model.clone();
-        
-        loop {
-            round += 1;
-            if round > max_rounds { break; }
+        let options = AgentOptions {
+            model: model.clone(),
+            system_prompt: sys_content,
+            tools: tools_list,
+            max_rounds: 20,
+            narrow,
+            silent: false,
+            terminal_width: tw,
+        };
 
-            let result = api::call_stream(&client, &base_url, &api_key, &current_model, &api_msgs, active_tools, narrow, tw).await;
-
-            match result {
-                Ok(mut stream_res) => {
-                    // Auto-continuation for truncated content
-                    let mut accumulated_content = stream_res.content.clone();
-                    let mut accumulated_reasoning = stream_res.reasoning_content.clone();
-                    
-                    while stream_res.finish_reason.as_deref() == Some("length") && stream_res.tool_calls.is_empty() {
-                        if narrow { eprintln!("─ continuing truncated response..."); }
+        match engine.run_loop(&options, history).await {
+            Ok((new_api_msgs, _usage)) => {
+                // The first message is system, the rest are user/assistant/tool messages.
+                // We want to find the NEW assistant/tool messages and update our `messages` vector.
+                // Actually, let's just extract all assistant messages from the result that are NOT in our `messages` yet.
+                // A simpler way: the model might have called tools. The final message in `new_api_msgs`
+                // should be the model's final response if it didn't call tools, or the last assistant message.
+                
+                // For `chat.rs`, we only care about the final user-facing response to show in history.
+                // But we also need to store tool results in `api_msgs` for the NEXT turn.
+                // Wait, if we use a persistent `api_msgs` for the next turn, we need to handle it.
+                
+                // Actually, chat.rs's `messages` only stores user and final assistant responses for display.
+                // Tool calls are usually transient in the session history unless we want to persist them.
+                // Let's find the last assistant message.
+                
+                if let Some(last_msg) = new_api_msgs.last() {
+                    if last_msg["role"] == "assistant" {
+                        let content = last_msg["content"].as_str().unwrap_or("").to_string();
+                        let rc = last_msg["reasoning_content"].as_str().map(|s| s.to_string());
                         
-                        // Push what we have as assistant message
-                        let mut partial_assistant = serde_json::json!({"role": "assistant", "content": accumulated_content.clone()});
-                        if !accumulated_reasoning.is_empty() {
-                            partial_assistant["reasoning_content"] = serde_json::Value::String(accumulated_reasoning.clone());
-                        }
-                        
-                        let mut temp_msgs = api_msgs.clone();
-                        temp_msgs.push(partial_assistant);
-                        
-                        // Call again
-                        match api::call_stream(&client, &base_url, &api_key, &current_model, &temp_msgs, active_tools, narrow, tw).await {
-                            Ok(next_res) => {
-                                accumulated_content.push_str(&next_res.content);
-                                accumulated_reasoning.push_str(&next_res.reasoning_content);
-                                stream_res = next_res; // update for the loop condition
-                            }
-                            Err(_) => break,
-                        }
-                    }
-                    
-                    stream_res.content = accumulated_content;
-                    stream_res.reasoning_content = accumulated_reasoning;
-
-                    let mut assistant_msg = serde_json::json!({"role": "assistant", "content": stream_res.content});
-                    if !stream_res.tool_calls.is_empty() {
-                        if !stream_res.reasoning_content.is_empty() {
-                            assistant_msg["reasoning_content"] = serde_json::Value::String(stream_res.reasoning_content.clone());
-                        }
-                        let tc_json: Vec<serde_json::Value> = stream_res.tool_calls.iter().map(|tc| {
-                            serde_json::json!({"id": tc.id, "type": "function", "function": { "name": tc.name, "arguments": tc.arguments }})
-                        }).collect();
-                        assistant_msg["tool_calls"] = serde_json::Value::Array(tc_json);
-                        api_msgs.push(assistant_msg);
-
-                        for tc in &stream_res.tool_calls {
-                            let mut tool_out = api::execute_tool(tc).await;
-                            if tool_out.len() > MAX_TOOL_OUTPUT_CHARS {
-                                tool_out = format!("{}... (truncated, {} total)", &tool_out[..MAX_TOOL_OUTPUT_CHARS], tool_out.len());
-                            }
-                            api_msgs.push(serde_json::json!({"role": "tool", "tool_call_id": tc.id, "content": tool_out}));
-                            if narrow { eprintln!("─ tool: {}(..) → {} chars", tc.name, tool_out.len()); }
-                        }
-                        continue;
-                    } else {
-                        let rc = if stream_res.reasoning_content.is_empty() { None } else { Some(stream_res.reasoning_content.clone()) };
+                        // Check if this was a tool call that we already processed
+                        // Actually, the engine's final message is what we want.
                         messages.push(Message {
-                            role: "assistant".into(), content: stream_res.content.clone(),
-                            reasoning_content: rc, created_at: Utc::now().timestamp(),
+                            role: "assistant".into(),
+                            content,
+                            reasoning_content: rc,
+                            created_at: Utc::now().timestamp(),
                         });
-                        persist_session(&store, &thread_id, &model, &messages);
-                        break;
                     }
                 }
-                Err(e) => {
-                    if let Some(fb) = fallback_model(&current_model) {
-                        if narrow { eprintln!("─ retry with {fb}..."); }
-                        current_model = fb.to_string();
-                        continue;
-                    }
-                    eprintln!("\nerror: {e}");
-                    break;
-                }
+                persist_session(&store, &thread_id, &model, &messages);
+            }
+            Err(e) => {
+                eprintln!("\nerror: {e}");
             }
         }
     }
