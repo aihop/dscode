@@ -166,6 +166,12 @@ pub async fn call_stream(
                 l => match l.strip_prefix("data: ") { Some(s) => s, None => continue },
             };
             if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(data) {
+                // Finish reason (diagnose truncation)
+                if let Some(fr) = parsed["choices"][0]["finish_reason"].as_str() {
+                    if fr == "length" && !narrow {
+                        eprintln!("\x1B[33m[response truncated by token limit]\x1B[0m");
+                    }
+                }
                 // Exact usage + cache stats
                 if let Some(u) = parsed.get("usage") {
                     if let Some(t) = u["completion_tokens"].as_u64() { usage.tokens_out = t; }
