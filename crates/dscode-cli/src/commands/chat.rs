@@ -208,7 +208,7 @@ pub async fn run(args: &ChatArgs) {
         let active_tools: Option<&[serde_json::Value]> = if tools_list.is_empty() { None } else { Some(&tools_list) };
 
         // Auto-inject AGENT.md as system prompt if it exists in project root
-        let agent_prompt = load_agent_md();
+        let agent_prompt = api::load_agent_md();
         let mut api_msgs: Vec<serde_json::Value> = Vec::new();
         if let Some(ref ap) = agent_prompt {
             if api_msgs.is_empty() || api_msgs[0]["role"] != "system" {
@@ -462,26 +462,7 @@ fn terminal_width() -> u16 {
     80
 }
 
-/// Load AGENT.md from project root — cached once per session.
-fn load_agent_md() -> Option<String> {
-    use std::sync::OnceLock;
-    static CACHE: OnceLock<Option<String>> = OnceLock::new();
-    CACHE.get_or_init(|| {
-        let cwd = std::env::current_dir().ok()?;
-        for name in &["AGENT.md", "AGENTS.md", "CLAUDE.md"] {
-            let path = cwd.join(name);
-            if path.exists() {
-                if let Ok(content) = std::fs::read_to_string(&path) {
-                    let trimmed = content.trim();
-                    if !trimmed.is_empty() {
-                        return Some(format!("Project context from {}:\n{}", name, trimmed));
-                    }
-                }
-            }
-        }
-        None
-    }).clone()
-}
+
 
 /// Detect current git branch name for prompt display
 fn get_git_branch() -> Option<String> {

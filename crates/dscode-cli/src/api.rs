@@ -712,6 +712,27 @@ fn highlight_code(code: &str, lang: &str) -> String {
     out
 }
 
+/// Load AGENT.md / AGENTS.md / CLAUDE.md from project root — cached once per session.
+pub fn load_agent_md() -> Option<String> {
+    use std::sync::OnceLock;
+    static CACHE: OnceLock<Option<String>> = OnceLock::new();
+    CACHE.get_or_init(|| {
+        let cwd = std::env::current_dir().ok()?;
+        for name in &["AGENT.md", "AGENTS.md", "CLAUDE.md"] {
+            let path = cwd.join(name);
+            if path.exists() {
+                if let Ok(content) = std::fs::read_to_string(&path) {
+                    let trimmed = content.trim();
+                    if !trimmed.is_empty() {
+                        return Some(format!("Project context from {}:\n{}", name, trimmed));
+                    }
+                }
+            }
+        }
+        None
+    }).clone()
+}
+
 /// Non-streaming call (no tool support needed for now, but returns content)
 pub async fn call_nonstream(
     client: &reqwest::Client,
