@@ -1,4 +1,5 @@
 use clap::Subcommand;
+use codewhale_state::{StateStore, ThreadListFilters};
 
 #[derive(Debug, Subcommand)]
 pub enum SessionCommands {
@@ -15,181 +16,150 @@ pub enum SessionCommands {
     Export { id: String },
 }
 
-pub async fn run(cmd: &SessionCommands) {
-    match cmd {
-        SessionCommands::List => list(),
-        SessionCommands::Show { id } => show(id),
-        SessionCommands::Rename { id, name } => rename(id, name),
-        SessionCommands::Delete { id } => delete(id),
-        SessionCommands::Export { id } => export(id),
+fn open_store() -> Option<StateStore> {
+    let path = db_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).ok();
     }
+    StateStore::open(Some(path)).ok()
 }
 
-fn sessions_dir() -> std::path::PathBuf {
+fn db_path() -> std::path::PathBuf {
     dirs::data_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("~/.local/share"))
         .join("dscode")
-        .join("sessions")
+        .join("state.db")
 }
 
-fn list() {
-    let dir = sessions_dir();
-    if !dir.exists() {
-        println!("No sessions found.");
-        return;
+/// Find thread by exact or prefix id.
+fn find_thread(store: &StateStore, id: &str) -> Option<(codewhale_state::ThreadMetadata, Vec<codewhale_state::MessageRecord>)> {
+    // Exact match
+    if let Ok(Some(t)) = store.get_thread(id) {
+        let msgs = store.list_messages(&t.id, None).unwrap_or_default();
+        return Some((t, msgs));
     }
-
-    let mut sessions: Vec<(String, String, i64, usize)> = Vec::new();
-    for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
-        let path = entry.path();
-        if path.extension().is_some_and(|e| e == "json") {
-            if let Ok(content) = std::fs::read_to_string(&path) {
-                if let Ok(data) = serde_json::from_str::<serde_json::Value>(&content) {
-                    let id = path.file_stem().unwrap().to_string_lossy().to_string();
-                    let created = data["created_at"].as_i64().unwrap_or(0);
-                    let updated = data["updated_at"].as_i64().unwrap_or(created);
-                    let model = data["model"].as_str().unwrap_or("?");
-                    let msg_count = data["messages"].as_array().map(|a| a.len()).unwrap_or(0);
-                    // Preview: first user message
-                    let preview = data["messages"]
-                        .as_array()
-                        .and_then(|msgs| {
-                            msgs.iter().find(|m| m["role"] == "user")
-                        })
-                        .and_then(|m| m["content"].as_str())
-                        .map(|s| if s.len() > 50 {
-                            format!("{}...", &s[..47])
-                        } else {
-                            s.to_string()
-                        })
-                        .unwrap_or_else(|| "(empty)".to_string());
-
-                    sessions.push((id, format!("{} [{msg_count}] {preview}", model), updated, msg_count));
-                }
-            }
+    // Prefix match
+    let threads = store.list_threads(ThreadListFilters { include_archived: false, limit: Some(100) }).ok()?;
+    for t in threads {
+        if t.id.starts_with(id) {
+            let msgs = store.list_messages(&t.id, None).unwrap_or_default();
+            return Some((t, msgs));
         }
     }
+    None
+}
 
-    sessions.sort_by(|a, b| b.2.cmp(&a.2));
+pub async fn run(cmd: &SessionCommands) {
+    let Some(store) = open_store() else {
+        eprintln!("error: could not open session store");
+        return;
+    };
 
-    if sessions.is_empty() {
+    match cmd {
+        SessionCommands::List => list(&store),
+        SessionCommands::Show { id } => show(&store, id),
+        SessionCommands::Rename { id, name } => rename(&store, id, name),
+        SessionCommands::Delete { id } => delete(&store, id),
+        SessionCommands::Export { id } => export(&store, id),
+    }
+}
+
+fn list(store: &StateStore) {
+    let threads = match store.list_threads(ThreadListFilters { include_archived: false, limit: Some(100) }) {
+        Ok(t) => t,
+        Err(_) => { println!("No sessions found."); return; }
+    };
+
+    if threads.is_empty() {
         println!("No sessions found.");
         return;
     }
 
     println!("Sessions");
     println!();
-    for (id, label, _ts, _n) in &sessions {
-        let short = if id.len() > 8 { &id[..8] } else { id };
-        println!("  {short}  {label}");
+    for t in &threads {
+        let short = if t.id.len() > 8 { &t.id[..8] } else { &t.id };
+        let name_tag = t.name.as_deref().map(|n| format!(" ({n})")).unwrap_or_default();
+        let preview = if t.preview.len() > 50 {
+            format!("{}...", &t.preview[..47])
+        } else {
+            t.preview.clone()
+        };
+        let msgs = store.list_messages(&t.id, Some(1)).unwrap_or_default();
+        let count_hint = if msgs.is_empty() { "0".to_string() }
+            else { format!("~{}", msgs.len() * 2) }; // rough estimate
+        println!("  {short}{name_tag}  {} [{}] {}", t.model_provider, count_hint, preview);
     }
     println!();
     println!("  Resume: dscode chat -s <id>");
 }
 
-fn rename(id: &str, name: &str) {
-    let path = session_path(id);
-    if !path.exists() {
-        eprintln!("session '{id}' not found");
-        return;
+fn show(store: &StateStore, id: &str) {
+    let (thread, msgs) = match find_thread(store, id) {
+        Some(v) => v,
+        None => { eprintln!("Session '{id}' not found."); return; }
+    };
+
+    let sid = if thread.id.len() > 8 { &thread.id[..8] } else { &thread.id };
+    println!("Session: {sid}");
+    if let Some(ref name) = thread.name { println!("  name:     {name}"); }
+    println!("  model:    {}", thread.model_provider);
+    println!("  created:  {}", thread.created_at);
+    println!("  updated:  {}", thread.updated_at);
+    println!();
+
+    for msg in &msgs {
+        let preview = if msg.content.len() > 80 {
+            format!("{}...", &msg.content[..77])
+        } else {
+            msg.content.clone()
+        };
+        println!("  [{}] {preview}", msg.role);
     }
-    let content = match std::fs::read_to_string(&path) {
-        Ok(c) => c,
-        Err(e) => { eprintln!("error: {e}"); return; }
+}
+
+fn rename(store: &StateStore, id: &str, name: &str) {
+    let (mut thread, _) = match find_thread(store, id) {
+        Some(v) => v,
+        None => { eprintln!("session '{id}' not found"); return; }
     };
-    let mut data: serde_json::Value = match serde_json::from_str(&content) {
-        Ok(d) => d,
-        Err(_) => { eprintln!("session '{id}' is corrupted"); return; }
-    };
-    data["name"] = serde_json::Value::String(name.to_string());
-    match std::fs::write(&path, serde_json::to_string_pretty(&data).unwrap()) {
+    thread.name = Some(name.to_string());
+    thread.updated_at = chrono::Utc::now().timestamp();
+    match store.upsert_thread(&thread) {
         Ok(_) => println!("✓ renamed to '{name}'"),
         Err(e) => eprintln!("error: {e}"),
     }
 }
 
-fn show(id: &str) {
-    let path = sessions_dir().join(format!("{id}.json"));
-    if !path.exists() {
-        eprintln!("Session '{id}' not found.");
-        return;
-    }
-
-    let content = match std::fs::read_to_string(&path) {
-        Ok(c) => c,
-        Err(e) => { eprintln!("Error: {e}"); return; }
+fn delete(store: &StateStore, id: &str) {
+    let (thread, _) = match find_thread(store, id) {
+        Some(v) => v,
+        None => { eprintln!("Session '{id}' not found."); return; }
     };
-
-    let data = match serde_json::from_str::<serde_json::Value>(&content) {
-        Ok(d) => d,
-        Err(_) => { eprintln!("Session '{id}' is corrupted."); return; }
-    };
-
-    let sid = data["id"].as_str().unwrap_or(id);
-    let model = data["model"].as_str().unwrap_or("?");
-    let created = data["created_at"].as_i64().unwrap_or(0);
-    let updated = data["updated_at"].as_i64().unwrap_or(0);
-
-    println!("Session: {}", if sid.len() > 8 { &sid[..8] } else { sid });
-    println!("  model:    {model}");
-    println!("  created:  {created}");
-    println!("  updated:  {updated}");
-    println!();
-
-    if let Some(msgs) = data["messages"].as_array() {
-        for msg in msgs {
-            let role = msg["role"].as_str().unwrap_or("?");
-            let content = msg["content"].as_str().unwrap_or("");
-            let preview = if content.len() > 80 {
-                format!("{}...", &content[..77])
-            } else {
-                content.to_string()
-            };
-            println!("  [{role}] {preview}");
-        }
-    }
-}
-
-fn session_path(id: &str) -> std::path::PathBuf {
-    let dir = sessions_dir();
-    let path = dir.join(format!("{id}.json"));
-    if path.exists() {
-        return path;
-    }
-    // prefix match
-    if dir.exists() {
-        for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
-            let p = entry.path();
-            if p.extension().is_some_and(|e| e == "json")
-                && p.file_stem().and_then(|s| s.to_str()).is_some_and(|s| s.starts_with(id))
-            {
-                return p;
-            }
-        }
-    }
-    path
-}
-
-fn delete(id: &str) {
-    let path = session_path(id);
-    if !path.exists() {
-        eprintln!("Session '{id}' not found.");
-        return;
-    }
-    match std::fs::remove_file(&path) {
-        Ok(_) => println!("✓ Session '{id}' deleted."),
+    match store.delete_thread(&thread.id) {
+        Ok(_) => println!("✓ Session '{}' deleted.", &thread.id[..8.min(thread.id.len())]),
         Err(e) => eprintln!("Error: {e}"),
     }
 }
 
-fn export(id: &str) {
-    let path = session_path(id);
-    if !path.exists() {
-        eprintln!("Session '{id}' not found.");
-        return;
-    }
-    match std::fs::read_to_string(&path) {
-        Ok(c) => println!("{c}"),
-        Err(e) => eprintln!("Error: {e}"),
-    }
+fn export(store: &StateStore, id: &str) {
+    let (thread, msgs) = match find_thread(store, id) {
+        Some(v) => v,
+        None => { eprintln!("Session '{id}' not found."); return; }
+    };
+
+    let json = serde_json::json!({
+        "id": thread.id,
+        "model": thread.model_provider,
+        "name": thread.name,
+        "created_at": thread.created_at,
+        "updated_at": thread.updated_at,
+        "messages": msgs.iter().map(|m| serde_json::json!({
+            "role": m.role,
+            "content": m.content,
+            "created_at": m.created_at,
+        })).collect::<Vec<_>>(),
+    });
+
+    println!("{}", serde_json::to_string_pretty(&json).unwrap_or_default());
 }
