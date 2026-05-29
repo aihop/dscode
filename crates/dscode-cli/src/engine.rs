@@ -9,6 +9,7 @@ pub struct AgentOptions {
     pub narrow: bool,
     pub silent: bool,
     pub terminal_width: u16,
+    pub cwd: std::path::PathBuf,
 }
 
 pub struct AgentEngine {
@@ -29,7 +30,13 @@ impl AgentEngine {
         options: &AgentOptions,
         history: Vec<Value>,
     ) -> Result<(Vec<Value>, UsageInfo), String> {
-        let mut api_msgs = vec![json!({"role": "system", "content": options.system_prompt})];
+        let full_system = format!(
+            "{}\n\n## Environment\n- Current Working Directory: {}\n- Terminal: {}\n",
+            options.system_prompt,
+            options.cwd.display(),
+            if options.narrow { "narrow/mobile" } else { "standard" }
+        );
+        let mut api_msgs = vec![json!({"role": "system", "content": full_system})];
         api_msgs.extend(history);
 
         let mut total_usage = UsageInfo::default();

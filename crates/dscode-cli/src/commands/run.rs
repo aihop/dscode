@@ -56,11 +56,11 @@ pub async fn run(args: &RunArgs) {
 
     let tools_list = Some(api::tool_definitions());
     
-    let mut api_msgs: Vec<serde_json::Value> = Vec::new();
-    let mut sys_content = String::new();
+    let mut sys_content = "You are dscode, a mobile-first AI coding agent. You are running in the project root. Always use relative paths.".to_string();
     if let Some(ap) = api::load_agent_md() {
-        sys_content = ap;
+        sys_content = format!("{}\n\n{}", sys_content, ap);
     }
+    let mut api_msgs: Vec<serde_json::Value> = Vec::new();
     api_msgs.push(serde_json::json!({"role": "user", "content": prompt}));
 
     let engine = AgentEngine::new(client, base_url, api_key);
@@ -72,6 +72,7 @@ pub async fn run(args: &RunArgs) {
         narrow,
         silent: false,
         terminal_width: tw,
+        cwd: std::env::current_dir().unwrap_or_default(),
     };
 
     if stream {

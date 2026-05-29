@@ -255,6 +255,7 @@ pub async fn run(args: &ChatArgs) {
         
         let default_system = "\
 You are dscode, a mobile-first AI coding agent powered by DeepSeek.
+You are running directly in the project root directory. Always use relative paths for tools.
 
 ## Truth & Verification
 - After editing a file, read it back to confirm the change took effect.
@@ -286,6 +287,7 @@ You are dscode, a mobile-first AI coding agent powered by DeepSeek.
             narrow,
             silent: false,
             terminal_width: tw,
+            cwd: std::env::current_dir().unwrap_or_default(),
         };
 
         match engine.run_loop(&options, history).await {

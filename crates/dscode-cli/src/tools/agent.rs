@@ -133,7 +133,7 @@ fn global_agents() -> &'static Arc<Mutex<HashMap<String, SubAgentState>>> {
 }
 
 async fn run_sub_agent(
-    api_key: &str, base_url: &str, _cwd: &std::path::Path,
+    api_key: &str, base_url: &str, cwd: &std::path::Path,
     prompt: &str, context_msgs: &[Value],
 ) -> String {
     let client = reqwest::Client::new();
@@ -155,6 +155,7 @@ async fn run_sub_agent(
         narrow: false,
         silent: true,
         terminal_width: 80,
+        cwd: cwd.to_path_buf(),
     };
 
     match engine.run_loop(&options, history).await {

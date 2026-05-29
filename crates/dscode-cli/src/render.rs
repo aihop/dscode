@@ -371,8 +371,7 @@ fn lang_keywords(lang: &str) -> &'static [&'static str] {
             "fn", "let", "mut", "pub", "use", "mod", "struct", "enum", "impl", "trait", "async",
             "await", "match", "if", "else", "for", "while", "loop", "return", "true", "false",
             "Some", "None", "Ok", "Err", "self", "Super", "crate", "where", "type", "const",
-            "static", "unsafe", "ref", "move", "as", "in", "dyn", "impl", "pub", "super", "self",
-            "String", "Vec", "Box", "Result",
+              "static", "unsafe", "ref", "move", "as", "in", "dyn",
         ],
         "python" | "py" => &[
             "def", "class", "return", "if", "elif", "else", "for", "while", "import", "from",
