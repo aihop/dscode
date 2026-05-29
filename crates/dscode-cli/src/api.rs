@@ -542,6 +542,8 @@ pub async fn call_stream(
 
     let mut full = String::new();
     let mut reasoning = String::new();
+    let mut line_buf = String::new();
+    let mut in_code_block = false;
     let mut stream = response.bytes_stream();
     let mut col: u16 = 0;
     let max_col = terminal_width.saturating_sub(2);
@@ -591,14 +593,22 @@ pub async fn call_stream(
                 if let Some(delta) = parsed["choices"][0]["delta"]["content"].as_str() {
                     full.push_str(delta);
                     usage.tokens_out += delta.len() as u64 / 4;
-                    // Track column for narrow terminal wrapping + clear residual chars
-                    if narrow {
-                        for ch in delta.chars() {
-                            if ch == '\n' {
-                                // Clear next line to avoid residual chars
-                                print!("\r\x1B[2K");
-                                col = 0;
-                            } else {
+                    // Render content: buffer lines for proper block-level Markdown
+                    for ch in delta.chars() {
+                        if ch == '\n' {
+                            // Complete line — render with full Markdown support
+                            let rendered = render_line(&line_buf, in_code_block);
+                            print!("{rendered}");
+                            // Track code fence state
+                            let trimmed = line_buf.trim();
+                            if trimmed.starts_with("```") {
+                                in_code_block = !in_code_block;
+                            }
+                            line_buf.clear();
+                            if narrow { print!("\r\x1B[2K"); col = 0; }
+                        } else {
+                            line_buf.push(ch);
+                            if narrow {
                                 col += 1;
                                 if col >= max_col && ch.is_whitespace() {
                                     print!("\n\r\x1B[2K");
@@ -607,9 +617,6 @@ pub async fn call_stream(
                             }
                         }
                     }
-                    // Lightweight inline markdown → ANSI on each delta
-                    let rendered = md_inline(delta);
-                    print!("{rendered}");
                     io::stdout().flush().ok();
                 }
                 // Non-streaming tool_calls (from finish_reason)
@@ -628,9 +635,75 @@ pub async fn call_stream(
         }
     }
 
+    // Flush remaining content in line buffer
+    if !line_buf.is_empty() {
+        let rendered = render_line(&line_buf, in_code_block);
+        print!("{rendered}");
+    }
     println!();
     let final_calls: Vec<ToolCall> = tool_calls.into_values().filter(|t| !t.name.is_empty()).collect();
     Ok(StreamResult { content: full, reasoning_content: reasoning, tool_calls: final_calls, usage })
+}
+
+/// Render one complete line with Markdown formatting.
+/// Inside code blocks: raw output. Outside: full md_to_ansi.
+fn render_line(line: &str, in_code: bool) -> String {
+    if in_code {
+        // Inside code block: just add line break (full block assembled in md_to_ansi)
+        format!("{}\n", line)
+    } else {
+        // Full Markdown rendering per line
+        md_to_ansi_line(line)
+    }
+}
+
+/// Render a single line (no newline added) with full Markdown → ANSI.
+fn md_to_ansi_line(line: &str) -> String {
+    let trimmed = line.trim();
+    if trimmed.is_empty() { return line.to_string(); }
+
+    // Headings
+    if let Some(rest) = trimmed.strip_prefix("# ") {
+        return format!("\x1B[1;34m{}\x1B[0m\n", rest);
+    }
+    if let Some(rest) = trimmed.strip_prefix("## ") {
+        return format!("\x1B[1;36m{}\x1B[0m\n", rest);
+    }
+    if let Some(rest) = trimmed.strip_prefix("### ") {
+        return format!("\x1B[1m{}\x1B[0m\n", rest);
+    }
+    // Block quotes
+    if let Some(rest) = trimmed.strip_prefix("> ") {
+        return format!("\x1B[90m> {}\x1B[0m\n", rest);
+    }
+    // Code fence start/end
+    if trimmed.starts_with("```") {
+        let lang = trimmed.trim_start_matches("```").trim();
+        let label = if lang.is_empty() { "code" } else { lang };
+        return format!("\x1B[90m─── {} ───\x1B[0m\n", label);
+    }
+    // List items
+    let prefix = if trimmed.starts_with("- ") { "  • " }
+        else if trimmed.starts_with("* ") { "  • " }
+        else if trimmed.starts_with("  ") { "  " }
+        else { "" };
+    let body = if !prefix.is_empty() && trimmed.len() > 2 {
+        &trimmed[2..]
+    } else {
+        line
+    };
+
+    // Inline formatting on the body text
+    let mut s = body.to_string();
+    s = replace_pattern(&s, "**", "\x1B[1m", "\x1B[22m");
+    s = replace_pattern(&s, "*", "\x1B[3m", "\x1B[23m");
+    s = replace_inline_code(&s);
+
+    if !prefix.is_empty() {
+        format!("{}{}\n", prefix, s)
+    } else {
+        format!("{}\n", s)
+    }
 }
 
 /// Lightweight inline Markdown → ANSI for streaming deltas.
