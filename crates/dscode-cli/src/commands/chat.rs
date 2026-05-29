@@ -21,7 +21,7 @@ pub struct ChatArgs {
     pub new: bool,
     #[arg(long, help = "System prompt (set once, persists in config)")]
     pub system: Option<String>,
-    #[arg(short = 't', long, help = "Enable tools (read_file, search_code, list_files)")]
+    #[arg(short = 't', long, help = "Enable agent tools: read/write/edit/search/list/run")]
     pub tools: bool,
     #[arg(long, help = "Disable streaming output")]
     pub no_stream: bool,
