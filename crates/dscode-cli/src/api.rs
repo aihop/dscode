@@ -144,6 +144,7 @@ pub async fn call_stream(
     let mut reasoning = String::new();
     let mut line_buf = String::new();
     let mut in_code_block = false;
+    let mut code_lang = String::new();
     let mut in_table = false;
     let mut table_buf: Vec<String> = Vec::new();
     let mut stream = response.bytes_stream();
@@ -219,8 +220,12 @@ pub async fn call_stream(
                                     table_buf.clear();
                                     in_table = false;
                                 }
-                                out.push_str(&render_line(&line_buf, in_code_block));
-                                if trimmed.starts_with("```") { in_code_block = !in_code_block; }
+                                out.push_str(&render_line(&line_buf, in_code_block, &code_lang));
+                                if trimmed.starts_with("```") {
+                                    if !in_code_block { code_lang = trimmed.trim_start_matches("```").trim().to_string(); }
+                                    else { code_lang.clear(); }
+                                    in_code_block = !in_code_block;
+                                }
                                 line_buf.clear();
                                 out.push_str("\r\x1B[2K");
                                 col = 0;
@@ -254,8 +259,12 @@ pub async fn call_stream(
                                         table_buf.clear();
                                         in_table = false;
                                     }
-                                    out.push_str(&render_line(&line_buf, in_code_block));
-                                    if trimmed.starts_with("```") { in_code_block = !in_code_block; }
+                                    out.push_str(&render_line(&line_buf, in_code_block, &code_lang));
+                                    if trimmed.starts_with("```") {
+                                        if !in_code_block { code_lang = trimmed.trim_start_matches("```").trim().to_string(); }
+                                        else { code_lang.clear(); }
+                                        in_code_block = !in_code_block;
+                                    }
                                     line_buf.clear();
                                 } else {
                                     line_buf.push_str(segment);
@@ -286,7 +295,7 @@ pub async fn call_stream(
 
     // Flush remaining content in line buffer
     if !line_buf.is_empty() {
-        let rendered = render_line(&line_buf, in_code_block);
+        let rendered = render_line(&line_buf, in_code_block, &code_lang);
         oprint(&rendered);
     }
     // Flush any buffered table
@@ -304,12 +313,14 @@ pub async fn call_stream(
 }
 
 /// Render one complete line with Markdown formatting.
-/// Inside code blocks: raw output (except closing ``` which shows a separator).
+/// Inside code blocks: syntax-highlighted when lang is known.
 /// Outside: full md_to_ansi.
-fn render_line(line: &str, in_code: bool) -> String {
+fn render_line(line: &str, in_code: bool, lang: &str) -> String {
     if in_code {
         if line.trim_start().starts_with("```") {
             format!("\x1B[90m{}\x1B[0m\n", "─".repeat(16))
+        } else if !lang.is_empty() {
+            highlight_code_line(line, lang)
         } else {
             format!("{}\n", line)
         }
@@ -650,64 +661,65 @@ fn lang_keywords(lang: &str) -> &'static [&'static str] {
     }
 }
 
-/// Simple syntax highlighter for code blocks.
-/// Colors: keywords=blue, strings=green, comments=gray, numbers=yellow
-fn highlight_code(code: &str, lang: &str) -> String {
+/// Highlight a single line of code with ANSI colors.
+fn highlight_code_line(line: &str, lang: &str) -> String {
     let keywords = lang_keywords(lang);
-    let mut out = String::new();
+    let trimmed = line.trim();
+    // Comment line
+    let comment_prefixes = ["//", "#", "--"];
+    if comment_prefixes.iter().any(|p| trimmed.starts_with(p)) {
+        return format!("\x1B[90m{}\x1B[0m\n", line);
+    }
 
-    for line in code.lines() {
-        let trimmed = line.trim();
-        // Comment line
-        let comment_prefixes = ["//", "#", "--"];
-        if comment_prefixes.iter().any(|p| trimmed.starts_with(p)) {
-            out.push_str(&format!("\x1B[90m{}\x1B[0m\n", line));
+    // Tokenize and color
+    let mut result = String::new();
+    let mut rest = line;
+    while !rest.is_empty() {
+        // String literals (double and single quoted)
+        if let Some(pos) = rest.find(|c| c == '"' || c == '\'') {
+            result.push_str(&rest[..pos]);
+            let quote = rest[pos..].chars().next().unwrap();
+            result.push_str(&rest[pos..pos+1]); // opening quote
+            let inner_start = pos + 1;
+            if let Some(end) = rest[inner_start..].find(quote) {
+                let inner = &rest[inner_start..inner_start + end];
+                result.push_str(&format!("\x1B[32m{}\x1B[0m{}", inner, quote));
+                rest = &rest[inner_start + end + 1..];
+            } else {
+                result.push_str(&format!("\x1B[32m{}\x1B[0m", &rest[inner_start..]));
+                rest = "";
+            }
             continue;
         }
 
-        // Tokenize and color
-        let mut result = String::new();
-        let mut rest = line;
-        while !rest.is_empty() {
-            // String literals (double and single quoted)
-            if let Some(pos) = rest.find(|c| c == '"' || c == '\'') {
-                result.push_str(&rest[..pos]);
-                let quote = rest[pos..].chars().next().unwrap();
-                result.push_str(&rest[pos..pos+1]); // opening quote
-                let inner_start = pos + 1;
-                if let Some(end) = rest[inner_start..].find(quote) {
-                    let inner = &rest[inner_start..inner_start + end];
-                    result.push_str(&format!("\x1B[32m{}\x1B[0m{}", inner, quote));
-                    rest = &rest[inner_start + end + 1..];
-                } else {
-                    // Unclosed string
-                    result.push_str(&format!("\x1B[32m{}\x1B[0m", &rest[inner_start..]));
-                    rest = "";
-                }
-                continue;
-            }
+        // Split by word boundaries
+        let word_end = rest.find(|c: char| !c.is_alphanumeric() && c != '_').unwrap_or(rest.len());
+        let word = &rest[..word_end];
+        let after = if word_end < rest.len() { &rest[word_end..word_end+1] } else { "" };
 
-            // Split by word boundaries
-            let word_end = rest.find(|c: char| !c.is_alphanumeric() && c != '_').unwrap_or(rest.len());
-            let word = &rest[..word_end];
-            let after = if word_end < rest.len() { &rest[word_end..word_end+1] } else { "" };
-
-            // Keyword highlighting
-            if !word.is_empty() && keywords.contains(&word) {
-                result.push_str(&format!("\x1B[34m{word}\x1B[0m"));
+        // Keyword highlighting
+        if !word.is_empty() && keywords.contains(&word) {
+            result.push_str(&format!("\x1B[34m{word}\x1B[0m"));
+        } else {
+            if word.chars().all(|c| c.is_ascii_digit() || c == '.') && !word.is_empty() {
+                result.push_str(&format!("\x1B[33m{word}\x1B[0m"));
             } else {
-                // Number highlighting
-                if word.chars().all(|c| c.is_ascii_digit() || c == '.') && !word.is_empty() {
-                    result.push_str(&format!("\x1B[33m{word}\x1B[0m"));
-                } else {
-                    result.push_str(word);
-                }
+                result.push_str(word);
             }
-            result.push_str(after);
-            rest = &rest[word_end + after.len()..];
         }
-        out.push_str(&result);
-        out.push('\n');
+        result.push_str(after);
+        rest = &rest[word_end + after.len()..];
+    }
+    result.push('\n');
+    result
+}
+
+/// Simple syntax highlighter for code blocks (multi-line).
+/// Colors: keywords=blue, strings=green, comments=gray, numbers=yellow
+fn highlight_code(code: &str, lang: &str) -> String {
+    let mut out = String::new();
+    for line in code.lines() {
+        out.push_str(&highlight_code_line(line, lang));
     }
     out
 }
