@@ -35,6 +35,17 @@ struct Message {
     created_at: i64,
 }
 
+/// Model fallback chain for API error recovery.
+const MODEL_FALLBACKS: &[(&str, &str)] = &[
+    ("deepseek-v4-pro", "deepseek-v4-flash"),
+];
+
+fn fallback_model(current: &str) -> Option<&'static str> {
+    MODEL_FALLBACKS.iter()
+        .find(|(primary, _)| *primary == current)
+        .map(|(_, fallback)| *fallback)
+}
+
 pub async fn run(args: &ChatArgs) {
     let model = resolve_model_name(
         &args.model.clone().unwrap_or_else(|| api::default_model(false)),
@@ -71,7 +82,6 @@ pub async fn run(args: &ChatArgs) {
 
     let narrow = is_narrow_terminal();
     let tw = terminal_width();
-    let max_rounds: usize = 20; // trim oldest when exceeded
 
     let initial_msgs = messages.len();
     if !narrow {
@@ -172,11 +182,15 @@ pub async fn run(args: &ChatArgs) {
         let ts = Utc::now().timestamp();
         messages.push(Message { role: "user".into(), content: input, created_at: ts });
 
-        // Context window: keep last N rounds
-        if messages.len() > max_rounds * 2 {
-            let trimmed = messages.len() - max_rounds * 2;
-            messages.drain(0..trimmed);
-            if narrow { eprintln!("─ trimmed {trimmed} old msgs to save context"); }
+        // Context window: rough token estimate, trim when approaching limit
+        const MAX_TOKENS: usize = 48_000;
+        {
+            let total: usize = messages.iter().map(|m| m.content.len() / 4 + 1).sum();
+            if total > MAX_TOKENS {
+                let remove = messages.len() / 2;
+                messages.drain(0..remove);
+                if narrow { eprintln!("─ trimmed {remove} old msgs (~{total} tok → save context)"); }
+            }
         }
 
         let tools_list = if args.plain { vec![] } else { api::tool_definitions() };
@@ -194,16 +208,20 @@ pub async fn run(args: &ChatArgs) {
         api_msgs.extend(messages.iter().map(|m| serde_json::json!({"role": m.role, "content": m.content})));
 
         // Agent loop: chat → tool_calls → execute → chat → ...
+        // With model fallback on API error + tool error recovery
         let max_agent_rounds = 15;
         let mut agent_round = 0;
+        let mut current_model = model.clone();
+        let mut fallback_attempted = false;
         loop {
             agent_round += 1;
             if agent_round > max_agent_rounds { break; }
 
-            let result = api::call_stream(&client, &base_url, &api_key, &model, &api_msgs, active_tools, narrow, tw).await;
+            let result = api::call_stream(&client, &base_url, &api_key, &current_model, &api_msgs, active_tools, narrow, tw).await;
 
             match result {
                 Ok(stream_res) => {
+                    fallback_attempted = false;
                     // Add assistant message with any tool_calls to context
                     let mut assistant_msg = serde_json::json!({
                         "role": "assistant",
@@ -251,6 +269,16 @@ pub async fn run(args: &ChatArgs) {
                     }
                 }
                 Err(e) => {
+                    // Model fallback: retry with fallback model once
+                    if !fallback_attempted {
+                        if let Some(fb) = fallback_model(&current_model) {
+                            let msg = format!("{current_model} failed, retrying with {fb}…");
+                            if narrow { eprintln!("─ {msg}"); } else { eprintln!("\x1B[33m{msg}\x1B[0m"); }
+                            current_model = fb.to_string();
+                            fallback_attempted = true;
+                            continue;
+                        }
+                    }
                     eprintln!("\nerror: {e}");
                     if !stream { messages.pop(); }
                     break;
