@@ -232,7 +232,7 @@ pub async fn run(args: &ChatArgs) {
 
                         // Execute tools
                         for tc in &stream_res.tool_calls {
-                            let result = api::execute_tool(tc);
+                            let result = api::execute_tool(tc).await;
                             api_msgs.push(serde_json::json!({
                                 "role": "tool",
                                 "tool_call_id": tc.id,
