@@ -66,6 +66,27 @@ pub fn run() -> std::process::ExitCode {
         .with_target(false)
         .init();
 
+    // Wrap everything in catch_unwind so slice panics become error messages
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        inner_run()
+    })) {
+        Ok(code) => code,
+        Err(panic) => {
+            let msg = if let Some(s) = panic.downcast_ref::<&str>() {
+                s.to_string()
+            } else if let Some(s) = panic.downcast_ref::<String>() {
+                s.clone()
+            } else {
+                "unknown".to_string()
+            };
+            eprintln!("\x1B[31minternal error: {msg}\x1B[0m");
+            eprintln!("  This is a bug. Please report it: https://github.com/aihop/dscode/issues");
+            std::process::ExitCode::FAILURE
+        }
+    }
+}
+
+fn inner_run() -> std::process::ExitCode {
     let cli = Cli::parse();
 
     if cli.version {

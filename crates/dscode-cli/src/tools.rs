@@ -64,6 +64,7 @@ impl ToolHandler for DscHandler {
             "git_blame" => exec_git_blame(&self.ctx, &args),
             "file_search" => exec_file_search(&self.ctx, &args),
             "apply_patch" => exec_apply_patch(&self.ctx, &args),
+            "git_status" => exec_git_status(&self.ctx, &args),
             "git_diff" => exec_git_diff(&self.ctx, &args),
             "git_add" => exec_git_add(&self.ctx, &args),
             "git_commit" => exec_git_commit(&self.ctx, &args),
@@ -271,6 +272,18 @@ fn tool_specs() -> Vec<ToolSpec> {
             output_schema: json!({}),
             supports_parallel_tool_calls: false,
             timeout_ms: Some(30_000),
+        },
+        ToolSpec {
+            name: "git_status".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Optional subdirectory to scope status"}
+                }
+            }),
+            output_schema: json!({}),
+            supports_parallel_tool_calls: true,
+            timeout_ms: Some(10_000),
         },
         ToolSpec {
             name: "git_diff".into(),
@@ -518,6 +531,7 @@ fn tool_description(name: &str) -> &'static str {
         "git_blame"   => "Show who last modified each line of a file. Optional line range.",
         "file_search" => "Search for files by name (fuzzy match). Returns matching file paths.",
         "apply_patch" => "Apply a unified-diff patch to the working tree (via git apply).",
+        "git_status"  => "Show working tree status (modified, staged, untracked files).",
         "git_diff"    => "Show working tree diff (unstaged or staged changes). Optional path scope.",
         "git_add"     => "Stage file(s) for commit. Path can be a file or glob pattern.",
         "git_commit"  => "Create a commit with a message. Requires prior git_add.",
@@ -618,10 +632,11 @@ fn exec_read_file(ctx: &ToolCtx, args: &str) -> String {
     match std::fs::read_to_string(&full_path) {
         Ok(content) => {
             let lines: Vec<&str> = content.lines().collect();
-            let start_line = v["start_line"].as_u64().unwrap_or(1).max(1) as usize - 1;
-            let max_lines = v["max_lines"].as_u64().unwrap_or(500).min(500) as usize;
-            let end_line = (start_line + max_lines).min(lines.len());
             let total = lines.len();
+            let start_line = v["start_line"].as_u64().unwrap_or(1).max(1) as usize - 1;
+            let start_line = start_line.min(total.saturating_sub(1));
+            let max_lines = v["max_lines"].as_u64().unwrap_or(500).min(500) as usize;
+            let end_line = (start_line + max_lines).min(total);
             let truncated = end_line < total;
             let shown: Vec<&str> = lines[start_line..end_line].to_vec();
             let mut out = format!("<file path=\"{}\" total_lines=\"{}\" start_line=\"{}\" end_line=\"{}\"",
@@ -1106,6 +1121,20 @@ fn exec_apply_patch(ctx: &ToolCtx, args: &str) -> String {
 
 // ── Git write tools ───────────────────────────────────────────
 
+fn exec_git_status(ctx: &ToolCtx, args: &str) -> String {
+    let v: Value = serde_json::from_str(args).unwrap_or_default();
+    let path = v["path"].as_str().unwrap_or("");
+    let mut cmd = std::process::Command::new("git");
+    cmd.args(["status", "--short", "--branch"]);
+    if !path.is_empty() { cmd.arg(path); }
+    cmd.current_dir(&ctx.cwd);
+    match cmd.output() {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).trim().to_string(),
+        Ok(o) => format!("git status failed: {}", String::from_utf8_lossy(&o.stderr)),
+        Err(e) => format!("git status error: {e}"),
+    }
+}
+
 fn exec_git_diff(ctx: &ToolCtx, args: &str) -> String {
     let v: Value = serde_json::from_str(args).unwrap_or_default();
     let path = v["path"].as_str().unwrap_or("");
@@ -1203,7 +1232,7 @@ async fn exec_review(ctx: &ToolCtx, args: &str) -> String {
     let client = reqwest::Client::new();
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
     let body = serde_json::json!({
-        "model": "deepseek-v4-pro",
+        "model": "deepseek-v4-flash",
         "messages": [
             {"role": "system", "content": "You are a senior code reviewer. Return a concise review with: summary, issues (severity/title/description), and suggestions. Be direct and actionable."},
             {"role": "user", "content": format!("Review this code:\n```\n{}```", code)}
@@ -1250,7 +1279,17 @@ async fn exec_fim_edit(ctx: &ToolCtx, args: &str) -> String {
     let base_url = resolve_base_url();
     let client = reqwest::Client::new();
     let url = format!("{}/completions", base_url.trim_end_matches('/'));
-    let fim_model = "deepseek-v4-pro";
+    // Check for ambiguous anchors
+    let pa_rest = &content[pa_start + prefix_anchor.len()..];
+    if pa_rest.find(prefix_anchor).is_some() {
+        return format!("error: prefix_anchor appears multiple times in {path} — include more context");
+    }
+    let sa_rest = &content[sa_start + suffix_anchor.len()..];
+    if sa_rest.find(suffix_anchor).is_some() {
+        return format!("error: suffix_anchor appears multiple times in {path} — include more context");
+    }
+
+    let fim_model = "deepseek-v4-flash";
     let body = serde_json::json!({
         "model": fim_model,
         "prompt": prompt,

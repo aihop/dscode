@@ -683,9 +683,9 @@ fn highlight_code_line(line: &str, lang: &str) -> String {
     while !rest.is_empty() {
         // String literals (double and single quoted)
         if let Some(pos) = rest.find(|c| c == '"' || c == '\'') {
+            let quote_len = rest[pos..].chars().next().map(|c| c.len_utf8()).unwrap_or(1);
             result.push_str(&rest[..pos]);
-            let quote = rest[pos..].chars().next().unwrap();
-            result.push_str(&rest[pos..pos+1]); // opening quote
+            let quote = &rest[pos..pos+quote_len];
             let inner_start = pos + 1;
             if let Some(end) = rest[inner_start..].find(quote) {
                 let inner = &rest[inner_start..inner_start + end];
