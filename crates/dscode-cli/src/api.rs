@@ -590,11 +590,19 @@ pub async fn call_stream(
                     if showed_reasoning { showed_reasoning = false; eprintln!(); }
                     full.push_str(delta);
                     usage.tokens_out += delta.len() as u64 / 4;
+                    // Track column for narrow terminal wrapping + clear residual chars
                     if narrow {
                         for ch in delta.chars() {
-                            if ch == '\n' { col = 0; } else {
+                            if ch == '\n' {
+                                // Clear next line to avoid residual chars
+                                print!("\r\x1B[2K");
+                                col = 0;
+                            } else {
                                 col += 1;
-                                if col >= max_col && ch.is_whitespace() { print!("\n"); col = 0; }
+                                if col >= max_col && ch.is_whitespace() {
+                                    print!("\n\r\x1B[2K");
+                                    col = 0;
+                                }
                             }
                         }
                     }

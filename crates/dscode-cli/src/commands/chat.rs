@@ -85,8 +85,9 @@ pub async fn run(args: &ChatArgs) {
     }
 
     loop {
+        // Clear line before prompt to avoid terminal residual chars
         let prompt = if narrow { "\n> " } else { "> " };
-        print!("{prompt}");
+        print!("\r\x1B[2K{prompt}");
         io::stdout().flush().unwrap();
 
         let mut input = String::new();
