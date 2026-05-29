@@ -421,7 +421,7 @@ fn tool_specs() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "checklist_list".into(),
-            input_schema: json!({}), output_schema: json!({}),
+            input_schema: json!({"type": "object", "properties": {}}), output_schema: json!({}),
             supports_parallel_tool_calls: true, timeout_ms: Some(5_000),
         },
         ToolSpec {
