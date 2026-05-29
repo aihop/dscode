@@ -454,8 +454,14 @@ fn exec_edit_file(ctx: &ToolCtx, args: &str) -> String {
     let full_path = cwd_join(ctx, path_str);
     match std::fs::read_to_string(&full_path) {
         Ok(content) => {
-            if !content.contains(old) {
-                return format!("error: exact match not found in {}", full_path.display());
+            match content.find(old) {
+                None => return format!("error: exact match not found in {}", full_path.display()),
+                Some(pos) => {
+                    // Reject ambiguous edits: old text must appear exactly once
+                    if content[pos + old.len()..].find(old).is_some() {
+                        return format!("error: '{}' appears multiple times — include more context lines to make the edit unambiguous", old);
+                    }
+                }
             }
             let new_content = content.replace(old, new);
             match std::fs::write(&full_path, &new_content) {
