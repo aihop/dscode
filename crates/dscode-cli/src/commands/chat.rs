@@ -21,6 +21,8 @@ pub struct ChatArgs {
     pub new: bool,
     #[arg(long, help = "System prompt (set once, persists in config)")]
     pub system: Option<String>,
+    #[arg(short = 't', long, help = "Enable tools (read_file, search_code, list_files)")]
+    pub tools: bool,
     #[arg(long, help = "Disable streaming output")]
     pub no_stream: bool,
 }
@@ -151,38 +153,77 @@ pub async fn run(args: &ChatArgs) {
         if messages.len() > max_rounds * 2 {
             let trimmed = messages.len() - max_rounds * 2;
             messages.drain(0..trimmed);
-            if narrow {
-                eprintln!("─ trimmed {trimmed} old msgs to save context");
-            }
+            if narrow { eprintln!("─ trimmed {trimmed} old msgs to save context"); }
         }
+
+        let tools_list = if args.tools { api::tool_definitions() } else { vec![] };
+        let active_tools: Option<&[serde_json::Value]> = if tools_list.is_empty() { None } else { Some(&tools_list) };
 
         let mut api_msgs: Vec<serde_json::Value> = Vec::new();
-        // Prepend system prompt if set
-        if let Some(sp) = &args.system {
-            if !sp.is_empty() {
-                api_msgs.push(serde_json::json!({"role": "system", "content": sp}));
-            }
-        }
-        api_msgs.extend(messages.iter().map(|m| {
-            serde_json::json!({"role": m.role, "content": m.content})
-        }));
+        if let Some(sp) = &args.system { if !sp.is_empty() { api_msgs.push(serde_json::json!({"role": "system", "content": sp})); } }
+        api_msgs.extend(messages.iter().map(|m| serde_json::json!({"role": m.role, "content": m.content})));
 
-        if stream {
-            match api::call_stream(&client, &base_url, &api_key, &model, &api_msgs, narrow, tw).await {
-                Ok((reply, usage)) => {
-                    messages.push(Message { role: "assistant".into(), content: reply, created_at: Utc::now().timestamp() });
-                    if narrow { eprintln!("─ {:.0} tok", usage.tokens_out); }
-                    save_session(&model, &messages);
+        // Agent loop: chat → tool_calls → execute → chat → ...
+        let max_agent_rounds = 5;
+        let mut agent_round = 0;
+        let mut final_content = String::new();
+
+        loop {
+            agent_round += 1;
+            if agent_round > max_agent_rounds { break; }
+
+            let result = api::call_stream(&client, &base_url, &api_key, &model, &api_msgs, active_tools, narrow, tw).await;
+
+            match result {
+                Ok(stream_res) => {
+                    // Add assistant message with any tool_calls to context
+                    let mut assistant_msg = serde_json::json!({
+                        "role": "assistant",
+                        "content": stream_res.content,
+                    });
+                    if !stream_res.tool_calls.is_empty() {
+                        let tc_json: Vec<serde_json::Value> = stream_res.tool_calls.iter().map(|tc| {
+                            serde_json::json!({
+                                "id": tc.id,
+                                "type": "function",
+                                "function": { "name": tc.name, "arguments": tc.arguments }
+                            })
+                        }).collect();
+                        assistant_msg["tool_calls"] = serde_json::Value::Array(tc_json);
+                        api_msgs.push(assistant_msg);
+
+                        // Execute tools
+                        for tc in &stream_res.tool_calls {
+                            let result = api::execute_tool(tc);
+                            api_msgs.push(serde_json::json!({
+                                "role": "tool",
+                                "tool_call_id": tc.id,
+                                "content": result,
+                            }));
+                            if narrow {
+                                eprintln!("─ tool: {}(..) → {} chars", tc.name, result.len());
+                            }
+                        }
+                        if narrow { eprintln!("─ {:.0} tok, continuing...", stream_res.usage.tokens_out); }
+                        continue; // next agent round
+                    } else {
+                        // Pure text response
+                        messages.push(Message {
+                            role: "assistant".into(),
+                            content: stream_res.content.clone(),
+                            created_at: Utc::now().timestamp(),
+                        });
+                        final_content = stream_res.content;
+                        if narrow { eprintln!("─ {:.0} tok", stream_res.usage.tokens_out); }
+                        save_session(&model, &messages);
+                        break;
+                    }
                 }
-                Err(e) => { eprintln!("\nerror: {e}"); messages.pop(); }
-            }
-        } else {
-            match api::call_nonstream(&client, &base_url, &api_key, &model, &api_msgs).await {
-                Ok((reply, usage)) => {
-                    messages.push(Message { role: "assistant".into(), content: reply, created_at: Utc::now().timestamp() });
-                    save_session(&model, &messages);
+                Err(e) => {
+                    eprintln!("\nerror: {e}");
+                    if !stream { messages.pop(); }
+                    break;
                 }
-                Err(e) => { eprintln!("\nerror: {e}"); messages.pop(); }
             }
         }
     }

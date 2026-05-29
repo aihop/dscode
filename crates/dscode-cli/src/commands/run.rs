@@ -56,9 +56,9 @@ pub async fn run(args: &RunArgs) {
     let messages = vec![serde_json::json!({"role": "user", "content": prompt})];
 
     if stream {
-        match api::call_stream(&client, &base_url, &api_key, &model, &messages, narrow, tw).await {
-            Ok((_reply, usage)) => {
-                if narrow { eprintln!("─ {:.0} tok", usage.tokens_out); }
+        match api::call_stream(&client, &base_url, &api_key, &model, &messages, None, narrow, tw).await {
+            Ok(res) => {
+                if narrow { eprintln!("─ {:.0} tok", res.usage.tokens_out); }
             }
             Err(e) => { eprintln!("error: {e}"); std::process::exit(1); }
         }
