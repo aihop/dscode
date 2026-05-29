@@ -182,14 +182,24 @@ pub async fn run(args: &ChatArgs) {
         let ts = Utc::now().timestamp();
         messages.push(Message { role: "user".into(), content: input, created_at: ts });
 
-        // Context window: rough token estimate, trim when approaching limit
-        const MAX_TOKENS: usize = 48_000;
+        // Context window: trim only when approaching 1M-tok context limit
+        // High threshold minimizes cache invalidation (prefix stays stable longer)
+        const MAX_TOKENS: usize = 200_000;
         {
-            let total: usize = messages.iter().map(|m| m.content.len() / 4 + 1).sum();
-            if total > MAX_TOKENS {
-                let remove = messages.len() / 2;
-                messages.drain(0..remove);
-                if narrow { eprintln!("─ trimmed {remove} old msgs (~{total} tok → save context)"); }
+            let estimated: usize = messages.iter().map(|m| m.content.len() / 4 + 1).sum();
+            if estimated > MAX_TOKENS {
+                // Token-aware: drop from front until under threshold
+                let mut removed = 0usize;
+                let mut dropped = 0usize;
+                for m in &messages {
+                    let cost = m.content.len() / 4 + 1;
+                    if estimated - dropped <= MAX_TOKENS * 3 / 4 { break; }
+                    dropped += cost;
+                    removed += 1;
+                }
+                let removed = removed.max(1);
+                messages.drain(0..removed);
+                if narrow { eprintln!("─ trimmed {removed} msgs (~{estimated} tok → cached prefix preserved)"); }
             }
         }
 
