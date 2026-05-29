@@ -1,5 +1,6 @@
 pub mod api;
 pub mod commands;
+pub mod render;
 pub mod tools;
 
 use clap::{Parser, Subcommand};
