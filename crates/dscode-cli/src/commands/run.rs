@@ -92,7 +92,7 @@ You are running directly in the project root directory. Always use relative path
           model,
           system_prompt: sys_content,
           tools: tools_list,
-          max_rounds: 25,
+          max_rounds: 40,
           narrow,
           silent: false,
           approval_mode: args.approve,

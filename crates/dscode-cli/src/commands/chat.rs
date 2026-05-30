@@ -360,6 +360,7 @@ You are running directly in the project root directory. Always use relative path
 
 ## Code Quality
 - **Self-Correction**: If a tool fails (e.g., edit_file match error), read the file again to fix your understanding of the code. Never repeat the same failing parameters.
+- **Batch Reads**: Read multiple files in a single round when you need context from different parts of the project. Reduces total rounds.
 - **Verification Loop**: After every significant code change, run `cargo check` (or relevant linter) via `run_shell` to catch syntax errors immediately.
 - **Type safety**: Prefer Rust's type system over runtime checks.
 - **Error handling**: Use Result, attach context. Avoid unwrap/expect except in tests.
@@ -407,7 +408,7 @@ You are running directly in the project root directory. Always use relative path
                 model: model.clone(),
                 system_prompt: sys_content,
                 tools: tools_list,
-                max_rounds: 30,
+                max_rounds: 50,
                 narrow,
                 silent: false,
                 approval_mode: args.approve,
