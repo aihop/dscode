@@ -106,6 +106,7 @@ impl ToolHandler for DscHandler {
             "run_shell"        => agent::exec_run_shell(&self.ctx, &args),
             "remember"         => agent::exec_remember(&args),
             "recall"           => agent::exec_recall(&args),
+            "batch"            => agent::exec_batch(&args).await,
 
             _ => format!("unknown tool: {}", invocation.tool_name),
         };
@@ -116,8 +117,6 @@ impl ToolHandler for DscHandler {
         })
     }
 }
-
-// ── Tool specs ────────────────────────────────────────────────
 
 fn tool_specs() -> Vec<ToolSpec> {
     vec![
@@ -512,6 +511,27 @@ fn tool_specs() -> Vec<ToolSpec> {
             output_schema: json!({}), supports_parallel_tool_calls: false, timeout_ms: Some(300_000),
         },
         ToolSpec {
+            name: "batch".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "commands": {
+                        "type": "array",
+                        "description": "List of tools to execute in sequence. Each entry: {\"tool\": \"name\", \"param\": \"value\", ...}",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "tool": {"type": "string", "description": "Tool name to execute"}
+                            },
+                            "required": ["tool"]
+                        }
+                    }
+                },
+                "required": ["commands"]
+            }),
+            output_schema: json!({}), supports_parallel_tool_calls: false, timeout_ms: Some(300_000),
+        },
+        ToolSpec {
             name: "remember".into(),
             input_schema: json!({
                 "type": "object",
@@ -637,6 +657,7 @@ pub const ALL_TOOL_NAMES: &[&str] = &[
     "review", "fim_edit", "agent_open", "agent_eval", "agent_close",
     "test_runner", "request_user_input",
     "checklist_write", "checklist_add", "checklist_update", "checklist_list",
+    "batch",
 ];
 
 /// Return tool definitions filtered to only include named tools.
@@ -683,6 +704,7 @@ fn tool_description(name: &str) -> &'static str {
         "request_user_input" => "Ask the user 1-3 short questions and return their selections.",
         "remember"     => "Store a fact, rule, or convention in persistent memory. The model can recall it in future sessions. Example: remember(error_handling, prefer anyhow).",
         "recall"       => "Search persistent memory for previously stored facts or conventions. Returns matching entries.",
+        "batch"        => "Execute multiple tools in a single round. Takes a commands array, runs them sequentially, returns combined results. Use to batch independent edits, shell commands, or reads — saves rounds.",
         _             => "Run a tool by name",
     }
 }

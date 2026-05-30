@@ -361,6 +361,48 @@ pub(crate) async fn exec_test_runner(ctx: &ToolCtx, args: &str) -> String {
     }
 }
 
+// ── Batch: execute multiple tools in one round ─────────────
+
+pub(crate) async fn exec_batch(args: &str) -> String {
+    let v: Value = serde_json::from_str(args).unwrap_or_default();
+    let commands = v["commands"].as_array().cloned().unwrap_or_default();
+    if commands.is_empty() {
+        return "error: no commands provided".to_string();
+    }
+    let mut results: Vec<String> = Vec::new();
+    for (i, cmd) in commands.iter().enumerate() {
+        let tool_name = cmd["tool"].as_str().unwrap_or("");
+        if tool_name.is_empty() {
+            results.push(format!("[{}] error: no tool name", i + 1));
+            continue;
+        }
+        // Build the arguments from the command, excluding the 'tool' key
+        let arguments = {
+            let mut map = serde_json::Map::new();
+            for (k, v) in cmd.as_object().unwrap_or(&serde_json::Map::new()) {
+                if k != "tool" {
+                    map.insert(k.clone(), v.clone());
+                }
+            }
+            Value::Object(map).to_string()
+        };
+        let tc = crate::api::ToolCall {
+            id: format!("batch-{}", i),
+            name: tool_name.to_string(),
+            arguments,
+        };
+        let result = crate::tools::execute_tool(&tc).await;
+        // Truncate large results to save context
+        let display = if result.len() > 500 {
+            format!("{}... (truncated)", &result[..500])
+        } else {
+            result
+        };
+        results.push(format!("[Step {}] {}:\n{}", i + 1, tool_name, display));
+    }
+    format!("Batch complete ({} steps):\n{}", results.len(), results.join("\n\n"))
+}
+
 // ── Memory: persistent cross-session storage ────────────────
 
 fn memory_path() -> std::path::PathBuf {
