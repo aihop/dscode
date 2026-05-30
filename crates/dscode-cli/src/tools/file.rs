@@ -278,9 +278,9 @@ pub(crate) fn exec_edit_file(ctx: &ToolCtx, args: &str) -> String {
                     if !old_first.is_empty() && !file_at_line.is_empty() {
                         snippet.push_str(&format!(
                             "  Your old text starts with:  \"{}\"\n  File content around line {}: \"{}\"\n\n",
-                            &old_first[..old_first.len().min(60)],
+                            old_first.chars().take(60).collect::<String>(),
                             expected_line,
-                            &file_at_line[..file_at_line.len().min(60)],
+                            file_at_line.chars().take(60).collect::<String>(),
                         ));
                     }
                     snippet.push_str("Common causes:\n");
