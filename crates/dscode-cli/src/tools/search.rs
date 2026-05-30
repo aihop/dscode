@@ -143,6 +143,57 @@ pub(crate) fn exec_search_symbols(ctx: &ToolCtx, args: &str) -> String {
     }
 }
 
+// ── List symbols in a specific file ───────────────────────────
+
+pub(crate) fn exec_list_symbols(ctx: &ToolCtx, args: &str) -> String {
+    let v: Value = serde_json::from_str(args).unwrap_or_default();
+    let path_str = v["path"].as_str().unwrap_or("");
+    if path_str.is_empty() {
+        return "error: no path provided".to_string();
+    }
+    let full_path = cwd_join(ctx, path_str);
+    let content = match std::fs::read_to_string(&full_path) {
+        Ok(c) => c,
+        Err(e) => return format!("error reading {path_str}: {e}"),
+    };
+
+    let mut results = Vec::new();
+    // Basic regex for Rust, Python, etc.
+    let patterns = [
+        (r"^\s*(pub\s+)?(async\s+)?fn\s+([a-zA-Z_][a-zA-Z0-9_]*)", "fn"),
+        (r"^\s*(pub\s+)?struct\s+([a-zA-Z_][a-zA-Z0-9_]*)", "struct"),
+        (r"^\s*(pub\s+)?enum\s+([a-zA-Z_][a-zA-Z0-9_]*)", "enum"),
+        (r"^\s*(pub\s+)?trait\s+([a-zA-Z_][a-zA-Z0-9_]*)", "trait"),
+        (r"^\s*(pub\s+)?impl", "impl"),
+        (r"^\s*(pub\s+)?mod\s+([a-zA-Z_][a-zA-Z0-9_]*)", "mod"),
+        (r"^\s*(pub\s+)?type\s+([a-zA-Z_][a-zA-Z0-9_]*)", "type"),
+        (r"^\s*def\s+([a-zA-Z_][a-zA-Z0-9_]*)", "def"),
+        (r"^\s*class\s+([a-zA-Z_][a-zA-Z0-9_]*)", "class"),
+    ];
+
+    let mut compiled = Vec::new();
+    for (pat, kind) in patterns {
+        if let Ok(re) = regex::Regex::new(pat) {
+            compiled.push((re, kind));
+        }
+    }
+
+    for (i, line) in content.lines().enumerate() {
+        for (re, kind) in &compiled {
+            if re.is_match(line) {
+                results.push(format!("{:>6}  {:7} {}", i + 1, kind, line.trim()));
+                break;
+            }
+        }
+    }
+
+    if results.is_empty() {
+        format!("no symbols found in {}", path_str)
+    } else {
+        format!("Symbols in {}:\n{}", path_str, results.join("\n"))
+    }
+}
+
 // ── File search (fuzzy filename) ──────────────────────────────
 
 pub(crate) fn exec_file_search(ctx: &ToolCtx, args: &str) -> String {

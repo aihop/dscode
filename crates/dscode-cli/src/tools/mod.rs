@@ -86,6 +86,7 @@ impl ToolHandler for DscHandler {
             // Search tools
             "search_code"      => search::exec_search_code(&self.ctx, &args),
             "search_symbols"   => search::exec_search_symbols(&self.ctx, &args),
+            "list_symbols"     => search::exec_list_symbols(&self.ctx, &args),
             "file_search"      => search::exec_file_search(&self.ctx, &args),
             "web_search"       => search::exec_web_search(&self.ctx, &args).await,
             "fetch_url"        => search::exec_fetch_url(&self.ctx, &args).await,
@@ -266,6 +267,19 @@ fn tool_specs() -> Vec<ToolSpec> {
                     "path": {"type": "string", "description": "Optional subdirectory to search"}
                 },
                 "required": ["query"]
+            }),
+            output_schema: json!({}),
+            supports_parallel_tool_calls: true,
+            timeout_ms: None,
+        },
+        ToolSpec {
+            name: "list_symbols".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "File path relative to project root"}
+                },
+                "required": ["path"]
             }),
             output_schema: json!({}),
             supports_parallel_tool_calls: true,
@@ -608,7 +622,7 @@ pub fn tool_definitions() -> Vec<Value> {
 
 /// Names of core tools — always sent first to save ~1,000 tok/req.
 pub const CORE_TOOL_NAMES: &[&str] = &[
-    "read_file", "write_file", "edit_file", "list_files", "run_shell", "search_code",
+    "read_file", "write_file", "edit_file", "list_files", "run_shell", "search_code", "list_symbols",
 ];
 
 /// All tool names (for expansion tracking).
@@ -617,11 +631,10 @@ pub const ALL_TOOL_NAMES: &[&str] = &[
     "list_files", "list_tree", "get_file_info", "apply_patch",
     "git_log", "git_show", "git_blame", "git_status", "git_diff",
     "git_add", "git_commit", "git_push",
-    "web_search", "fetch_url", "file_search",
+    "web_search", "fetch_url", "file_search", "list_symbols",
     "review", "fim_edit", "agent_open", "agent_eval", "agent_close",
     "test_runner", "request_user_input",
     "checklist_write", "checklist_add", "checklist_update", "checklist_list",
-    "remember", "recall",
 ];
 
 /// Return tool definitions filtered to only include named tools.

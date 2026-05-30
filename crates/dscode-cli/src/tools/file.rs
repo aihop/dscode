@@ -106,23 +106,33 @@ pub(crate) fn exec_edit_file(ctx: &ToolCtx, args: &str) -> String {
             let match_result = find_edit_match(content, &lines, old, line_hint);
             match match_result {
                 Err(EditMatchError::NotFound) => {
-                    let snippet = if let Some(ln) = line_hint {
+                    let mut snippet = if let Some(ln) = line_hint {
                         let idx = (ln as usize).saturating_sub(1).min(lines.len().saturating_sub(1));
-                        let start = idx.saturating_sub(5);
-                        let end = (idx + 5).min(lines.len());
+                        let start = idx.saturating_sub(10);
+                        let end = (idx + 10).min(lines.len());
                         let snip: Vec<String> = lines[start..end].iter().enumerate().map(|(i, l)| {
-                            format!("{:>6}  {}", start + i + 1, l)
+                            let current_ln = start + i + 1;
+                            let prefix = if current_ln == ln as usize { "> " } else { "  " };
+                            format!("{}{:>4} | {}", prefix, current_ln, l)
                         }).collect();
-                        format!(" near line {}. Lines in the file around there:\n{}", ln, snip.join("\n"))
+                        format!(" near line {}. Content around line {}:\n{}", ln, ln, snip.join("\n"))
                     } else {
-                        // If no hint, show the first 10 lines of the file to help the model realize where it is
-                        let end = 10.min(lines.len());
+                        let end = 15.min(lines.len());
                         let snip: Vec<String> = lines[..end].iter().enumerate().map(|(i, l)| {
-                            format!("{:>6}  {}", i + 1, l)
+                            format!("  {:>4} | {}", i + 1, l)
                         }).collect();
-                        format!(". First few lines of the file:\n{}", snip.join("\n"))
+                        format!(". First 15 lines:\n{}", snip.join("\n"))
                     };
-                    format!("error: match not found in {}{}\nTIP: Ensure your 'old' block matches the file EXACTLY, including comments and blank lines. Use 'read_file' again if unsure.", full_path.display(), snippet)
+                    
+                    // Add a tip about common issues
+                    snippet.push_str("\n\nTIP: Matching failed. This usually happens due to:\n");
+                    snippet.push_str("1. Indentation mismatch (DeepSeek sometimes misses leading spaces)\n");
+                    snippet.push_str("2. Hidden characters or trailing whitespace\n");
+                    snippet.push_str("3. You are looking at an outdated version of the file\n");
+                    snippet.push_str("4. The code block you provided spans too many lines and has a typo in the middle\n\n");
+                    snippet.push_str("ACTION: Use 'read_file' or 'list_symbols' to verify the exact content before retrying.");
+                    
+                    format!("error: match not found in {}{}", full_path.display(), snippet)
                 }
                 Err(EditMatchError::Ambiguous(count)) => {
                     if let Some(ln) = line_hint {

@@ -65,13 +65,14 @@ You are running directly in the project root directory. Always use relative path
 ## Reasoning & Planning (MANDATORY)
 - **Plan-First**: Before using any tools for a new task, you MUST output a detailed plan. Break down the task into logical steps.
 - **Checklist**: For complex multi-step tasks, use `checklist_write` to track your progress. Update it as you complete steps.
-- **Investigate First**: If you are unsure about the codebase, always use `read_file`, `search_code`, or `list_files` before proposing changes.
+- **Investigate First**: If you are unsure about the codebase, always use `list_symbols` to see file structure, then `read_file` for specific code. Use `search_code` or `search_symbols` for global discovery.
 - **Concise Reasoning**: Before each tool call, state your reasoning concisely in one sentence.
 
 ## Code Quality & Verification
 - **Self-Correction**: If a tool fails (e.g., edit_file match error), read the file again to fix your understanding. NEVER repeat the same failing parameters.
 - **Auto-Verification**: After every significant code change, run `cargo check` (or relevant linter) to catch errors.
 - **Mobile-First**: For small changes in large files, **STRICTLY PREFER `apply_patch`** over `edit_file` to save tokens and ensure stability on mobile networks.
+- **Precision**: When using `edit_file`, always provide a `line` hint to avoid ambiguity and speed up matching.
 - **Minimal Diffs**: Change only what is needed. Avoid unrelated reformatting.
 - **Single-file limit**: Files exceeding 400 lines should be split into focused modules.
 
