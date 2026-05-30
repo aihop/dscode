@@ -165,6 +165,47 @@ impl AgentEngine {
                         } else {
                             api::execute_tool(tc).await
                         };
+
+                        // Auto-Verification Hook: after editing a file, try to run a linter/checker
+                        if !skip && (tc.name == "edit_file" || tc.name == "write_file" || tc.name == "fim_edit" || tc.name == "apply_patch") && !result.starts_with("error:") {
+                            let path = serde_json::from_str::<Value>(&tc.arguments).ok()
+                                .and_then(|v| v["path"].as_str().map(|s| s.to_string()));
+                            if let Some(p) = path {
+                                if p.ends_with(".rs") {
+                                    if !options.silent { eprintln!("\x1B[90m─ auto-checking {}...\x1B[0m", p); }
+                                    let check_cmd = std::process::Command::new("cargo")
+                                        .args(["check", "--message-format=json"])
+                                        .current_dir(&options.cwd)
+                                        .output();
+                                    if let Ok(output) = check_cmd {
+                                        let stdout = String::from_utf8_lossy(&output.stdout);
+                                        let mut errors = Vec::new();
+                                        for line in stdout.lines() {
+                                            if let Ok(msg) = serde_json::from_str::<Value>(line) {
+                                                if msg["reason"] == "compiler-message" {
+                                                    let message = &msg["message"];
+                                                    if message["level"] == "error" {
+                                                        let rendered = message["rendered"].as_str().unwrap_or("");
+                                                        if !rendered.is_empty() {
+                                                            errors.push(rendered.to_string());
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            if errors.len() > 3 { break; }
+                                        }
+                                        if !errors.is_empty() {
+                                            result.push_str("\n\n[VERIFY FAIL]\n");
+                                            result.push_str(&errors.join("\n"));
+                                            result.push_str("\nTIP: You have introduced syntax errors. Please fix them immediately.");
+                                        } else {
+                                            result.push_str("\n[VERIFY PASS] Compilation OK");
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
                         if result.len() > MAX_TOOL_OUTPUT_CHARS {
                             result = format!("{}... (truncated, {} total)", &result[..MAX_TOOL_OUTPUT_CHARS], result.len());
                         }
@@ -295,12 +336,27 @@ fn format_tool_line(name: &str, result: &str) -> String {
             }
         }
         "edit_file" => {
-            // Format: "edited /path/file" or "edited /path/file\n<diff>"
-            let first = result.lines().next().unwrap_or("");
-            if let Some(rest) = first.strip_prefix("edited ") {
+            // Format: "edited /path/file\n<diff>"
+            let lines: Vec<&str> = result.lines().collect();
+            let first = lines.first().unwrap_or(&"");
+            let path = if let Some(rest) = first.strip_prefix("edited ") {
                 rest.to_string()
             } else {
-                format!("🔧  {}", result.chars().take(60).collect::<String>())
+                format!("🔧  {}", result.chars().take(40).collect::<String>())
+            };
+            
+            // Extract a mini-diff (first few added/removed lines)
+            let mut diff_summary = Vec::new();
+            for line in lines.iter().skip(1).take(10) {
+                if line.starts_with('+') || line.starts_with('-') {
+                    diff_summary.push(*line);
+                }
+                if diff_summary.len() >= 3 { break; }
+            }
+            if diff_summary.is_empty() {
+                path
+            } else {
+                format!("{} ({})", path, diff_summary.join(" ").chars().take(40).collect::<String>())
             }
         }
         "run_shell" => {

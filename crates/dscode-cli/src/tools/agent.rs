@@ -142,6 +142,7 @@ fn global_agents() -> &'static Arc<Mutex<HashMap<String, SubAgentState>>> {
 async fn run_sub_agent(
     api_key: &str, base_url: &str, cwd: &std::path::Path,
     prompt: &str, context_msgs: &[Value],
+    role: Option<&str>,
 ) -> String {
     let client = reqwest::Client::new();
     let engine = AgentEngine::new(client, base_url.to_string(), api_key.to_string());
@@ -154,19 +155,35 @@ async fn run_sub_agent(
         msgs
     };
 
+    let base_prompt = match role {
+        Some("architect") => "You are a software architect. Focus on high-level design, file structure, and dependency management. Your goal is to research the codebase and provide a detailed implementation plan. Do not write complex implementation code unless necessary.",
+        Some("coder") => "You are a senior software engineer. Your goal is to implement the requested features or fixes with high quality. Follow existing patterns and ensure the code is idiomatic.",
+        Some("reviewer") => "You are a rigorous code reviewer. Analyze the code for logic errors, security vulnerabilities, and performance bottlenecks. Provide actionable feedback.",
+        Some("tester") => "You are a QA engineer. Focus on writing and running tests to verify the correctness of the code. Cover edge cases and error paths.",
+        Some("explore") => "You are a code explorer. Your job is to read and understand the codebase. Use read_file, search_code, file_search, git_log, git_blame to find relevant code and understand its structure. Return path:line-range evidence. Do not modify any files.",
+        Some("plan") => "You are a technical planner. Analyze the requirements and codebase, then produce a structured plan using checklist_write. Break the work into concrete steps with file paths and approach details. Do not write implementation code.",
+        Some("verifier") => "You are a QA verifier. Run tests and validation commands to verify correctness. Report results clearly: pass/fail, failing assertions, and error messages. Do not fix failures — capture them for the parent to address.",
+        _ => "You are a focused sub-agent. Complete the specific task assigned to you. Do not over-scope.",
+    };
+
+    // Read-only roles: can search and read but not write
+    let read_only_roles = ["explore", "plan", "verifier"];
+    let is_read_only = role.map_or(false, |r| read_only_roles.contains(&r));
+    let tools = if is_read_only {
+        Some(crate::api::tool_definitions_filtered(&[
+            "read_file", "list_files", "list_tree", "get_file_info",
+            "search_code", "file_search", "web_search", "fetch_url",
+            "git_log", "git_show", "git_blame", "git_status", "git_diff",
+            "review", "checklist_write", "checklist_add", "checklist_update", "checklist_list",
+        ]))
+    } else {
+        Some(crate::api::tool_definitions())
+    };
+
     let options = AgentOptions {
         model: crate::api::resolve_model_name(&crate::api::default_model(false)),
-        system_prompt: "\
-You are a focused sub-agent. Complete the specific task assigned to you. Do not over-scope.
-
-## Rules
-1. Before writing code, read the relevant files first.
-2. After writing code, verify by reading the file back.
-3. Report results concisely: what you did, what changed, any issues found.
-4. If blocked, report the blocker clearly — do not guess.
-5. Use your reasoning tokens to analyze edge cases before acting.\
-".to_string(),
-        tools: Some(crate::api::tool_definitions()),
+        system_prompt: format!("{}\n\n## Rules\n1. Before writing code, read the relevant files first.\n2. After writing code, verify by reading the file back.\n3. Report results concisely: what you did, what changed, any issues found.\n4. If blocked, report the blocker clearly — do not guess.\n5. Use your reasoning tokens to analyze edge cases before acting.", base_prompt),
+        tools,
         max_rounds: 15,
         narrow: false,
         silent: true,
@@ -192,6 +209,8 @@ You are a focused sub-agent. Complete the specific task assigned to you. Do not 
 pub(crate) async fn exec_agent_open(ctx: &ToolCtx, args: &str) -> String {
     let v: Value = serde_json::from_str(args).unwrap_or_default();
     let prompt = v["prompt"].as_str().unwrap_or("");
+    let role = v["role"].as_str().map(|s| s.to_string());
+    let context = v["context"].as_str().unwrap_or("");
     if prompt.is_empty() { return "error: no prompt".to_string(); }
     let Some(api_key) = resolve_api_key() else { return "error: no API key".to_string() };
     let base_url = resolve_base_url();
@@ -201,13 +220,16 @@ pub(crate) async fn exec_agent_open(ctx: &ToolCtx, args: &str) -> String {
     let pk = api_key.clone();
     let bu = base_url.clone();
     let pr = prompt.to_string();
-    let ctx_msgs: Vec<Value> = Vec::new();
+    let mut ctx_msgs: Vec<Value> = Vec::new();
+    if !context.is_empty() {
+        ctx_msgs.push(json!({"role": "system", "content": format!("Background Context:\n{}", context)}));
+    }
     agents.lock().unwrap().insert(agent_id.clone(), SubAgentState {
         status: "running".into(), result: String::new(), created_at: Utc::now().timestamp(),
     });
     let id = agent_id.clone();
     tokio::spawn(async move {
-        let result = run_sub_agent(&pk, &bu, &cwd, &pr, &ctx_msgs).await;
+        let result = run_sub_agent(&pk, &bu, &cwd, &pr, &ctx_msgs, role.as_deref()).await;
         if let Some(state) = agents.lock().unwrap().get_mut(&id) {
             state.status = if result.starts_with("error:") { "failed".into() } else { "completed".into() };
             state.result = result;

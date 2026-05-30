@@ -1,44 +1,90 @@
 /// Search and discovery tools (Grep, Fuzzy, Web).
+///
+/// Uses `ignore` crate for gitignore-aware file walking (no system grep dependency).
+/// Falls back to curl for web/fetch (separate concern).
 
 use crate::tools::{cwd_join, ToolCtx};
 use serde_json::Value;
 
-// ── Search code (grep) ────────────────────────────────────────
+// ── Supported source extensions for code search ───────────────
+
+const SEARCH_EXTENSIONS: &[&str] = &[
+    "rs", "toml", "md", "html", "sh", "yml", "yaml",
+    "json", "css", "js", "ts", "tsx", "jsx", "py", "go", "c", "cpp", "h", "hpp",
+];
+
+const SYMBOL_EXTENSIONS: &[&str] = &[
+    "rs", "py", "js", "ts", "tsx", "jsx", "go", "c", "cpp", "h", "hpp", "java",
+];
+
+// ── Helper: walk files respecting .gitignore, filter by extension ──
+
+fn walk_files(root: &std::path::Path, extensions: &[&str]) -> Vec<std::path::PathBuf> {
+    use ignore::WalkBuilder;
+    let mut files = Vec::new();
+    let walker = WalkBuilder::new(root)
+        .standard_filters(true)    // respect .gitignore, hidden files, etc.
+        .build();
+    for entry in walker.flatten() {
+        if entry.file_type().map_or(false, |t| t.is_file()) {
+            if let Some(ext) = entry.path().extension().and_then(|e| e.to_str()) {
+                if extensions.contains(&ext) {
+                    files.push(entry.path().to_path_buf());
+                }
+            }
+        }
+    }
+    files
+}
+
+// ── Search code (regex) ───────────────────────────────────────
 
 pub(crate) fn exec_search_code(ctx: &ToolCtx, args: &str) -> String {
     let v: Value = serde_json::from_str(args).unwrap_or_default();
-    let pattern = v["pattern"].as_str().unwrap_or("");
+    let pattern_str = v["pattern"].as_str().unwrap_or("");
     let search_path = v["path"].as_str().unwrap_or(".");
-    if pattern.is_empty() {
+    if pattern_str.is_empty() {
         return "no pattern provided".to_string();
     }
-    let full_search_path = cwd_join(ctx, search_path);
+    let re = match regex::Regex::new(pattern_str) {
+        Ok(r) => r,
+        Err(e) => return format!("invalid regex '{pattern_str}': {e}"),
+    };
+    let root = cwd_join(ctx, search_path);
+    if !root.exists() {
+        return format!("path not found: {}", root.display());
+    }
+    let files = walk_files(&root, SEARCH_EXTENSIONS);
+    if files.is_empty() {
+        return format!("no searchable files found under {}", root.display());
+    }
     let mut results = Vec::new();
-    let cmd = std::process::Command::new("grep")
-        .args([
-            "-rn", "--include=*.rs", "--include=*.toml", "--include=*.md",
-            "--include=*.html", "--include=*.sh", "--include=*.yml",
-            "--include=*.json", "--include=*.css", "--include=*.js", "--include=*.ts",
-        ])
-        .args(["-e", pattern])
-        .arg(&full_search_path)
-        .output();
-    match cmd {
-        Ok(output) if output.status.success() => {
-            let out = String::from_utf8_lossy(&output.stdout);
-            for line in out.lines().take(60) {
-                results.push(line.to_string());
-            }
-            if results.is_empty() {
-                format!("no matches for '{pattern}'")
-            } else {
-                results.join("\n")
+    for f in &files {
+        let rel = f.strip_prefix(&root).unwrap_or(f);
+        let content = match std::fs::read_to_string(f) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        for (i, line) in content.lines().enumerate() {
+            if re.is_match(line) {
+                results.push(format!("{}:{}:{}", rel.display(), i + 1, line));
+                if results.len() >= 60 {
+                    break;
+                }
             }
         }
-        Ok(_) => format!("no matches for '{pattern}'"),
-        Err(e) => format!("search failed: {e}"),
+        if results.len() >= 60 {
+            break;
+        }
+    }
+    if results.is_empty() {
+        format!("no matches for '{pattern_str}'")
+    } else {
+        results.join("\n")
     }
 }
+
+// ── Symbol search (multi-pattern) ─────────────────────────────
 
 pub(crate) fn exec_search_symbols(ctx: &ToolCtx, args: &str) -> String {
     let v: Value = serde_json::from_str(args).unwrap_or_default();
@@ -47,39 +93,49 @@ pub(crate) fn exec_search_symbols(ctx: &ToolCtx, args: &str) -> String {
     if query.is_empty() {
         return "no query provided".to_string();
     }
-    let full_search_path = cwd_join(ctx, search_path);
-    let mut results = Vec::new();
-    
-    // Patterns for common language definitions (Rust, Python, JS, etc.)
-    let patterns = [
-        format!(r"fn\s+{}\b", query),        // Rust/JS function
-        format!(r"struct\s+{}\b", query),    // Rust/C struct
-        format!(r"class\s+{}\b", query),     // Python/JS/Java class
-        format!(r"enum\s+{}\b", query),      // Rust/C enum
-        format!(r"trait\s+{}\b", query),     // Rust trait
-        format!(r"type\s+{}\b", query),      // Rust/TS type
-        format!(r"def\s+{}\b", query),       // Python def
-        format!(r"pub\s+fn\s+{}\b", query),  // Rust pub fn
+    let q = regex::escape(query);
+    let symbol_patterns = [
+        format!(r"fn\s+{}\b", &q),
+        format!(r"struct\s+{}\b", &q),
+        format!(r"class\s+{}\b", &q),
+        format!(r"enum\s+{}\b", &q),
+        format!(r"trait\s+{}\b", &q),
+        format!(r"type\s+{}\b", &q),
+        format!(r"def\s+{}\b", &q),
+        format!(r"pub\s+fn\s+{}\b", &q),
     ];
-
-    for pattern in patterns {
-        let cmd = std::process::Command::new("grep")
-            .args(["-rn", "--include=*.rs", "--include=*.py", "--include=*.js", "--include=*.ts", "--include=*.go", "--include=*.c", "--include=*.cpp"])
-            .args(["-E", &pattern])
-            .arg(&full_search_path)
-            .output();
-        
-        if let Ok(output) = cmd {
-            if output.status.success() {
-                let out = String::from_utf8_lossy(&output.stdout);
-                for line in out.lines() {
-                    results.push(line.to_string());
+    let root = cwd_join(ctx, search_path);
+    if !root.exists() {
+        return format!("path not found: {}", root.display());
+    }
+    let files = walk_files(&root, SYMBOL_EXTENSIONS);
+    let mut results = Vec::new();
+    // Track which patterns matched which files for dedup
+    for f in &files {
+        let rel = f.strip_prefix(&root).unwrap_or(f);
+        let content = match std::fs::read_to_string(f) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        for pat_str in &symbol_patterns {
+            if let Ok(re) = regex::Regex::new(pat_str) {
+                for (i, line) in content.lines().enumerate() {
+                    if re.is_match(line) {
+                        results.push(format!("{}:{}:{}", rel.display(), i + 1, line));
+                        if results.len() >= 20 {
+                            break;
+                        }
+                    }
                 }
             }
+            if results.len() >= 20 {
+                break;
+            }
         }
-        if results.len() > 20 { break; }
+        if results.len() >= 20 {
+            break;
+        }
     }
-
     if results.is_empty() {
         format!("no definitions found for symbol '{}'", query)
     } else {

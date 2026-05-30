@@ -39,5 +39,7 @@ codewhale-state = "0.8"
 codewhale-tools = "0.8"
 codewhale-protocol = "0.8"
 async-trait = "0.1"
+ignore.workspace = true
+regex.workspace = true
 
 [dev-dependencies]

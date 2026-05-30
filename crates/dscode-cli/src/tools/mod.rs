@@ -438,7 +438,9 @@ fn tool_specs() -> Vec<ToolSpec> {
                 "type": "object",
                 "properties": {
                     "prompt": {"type": "string", "description": "Task for the sub-agent"},
-                    "name": {"type": "string", "description": "Optional session name"}
+                    "name": {"type": "string", "description": "Optional session name"},
+                    "role": {"type": "string", "description": "Role of the agent: explore (read-only research), plan (design + checklist), architect (high-level design), coder (implement), reviewer (audit code), tester (write tests), verifier (run tests/validate)", "enum": ["architect", "coder", "reviewer", "tester", "explore", "plan", "verifier"]},
+                    "context": {"type": "string", "description": "Optional background context or relevant code snippets"}
                 },
                 "required": ["prompt"]
             }),

@@ -259,7 +259,8 @@ pub async fn call_stream(
                                 col = 0;
                             } else {
                                 line_buf.push(ch);
-                                col += 1;
+                                let char_w = if ch as u32 > 0x2E80 { 2 } else { 1 };
+                                col += char_w;
                                 // Force wrap even without whitespace if we hit the absolute limit
                                 // but prefer wrapping at whitespace.
                                 if col >= max_col {
@@ -338,6 +339,13 @@ pub async fn call_stream(
     }
     if !silent { println!(); }
 
+    // Robust JSON repair for tool call arguments (handle mobile network interruptions)
+    for tc in tool_calls.values_mut() {
+        if !tc.arguments.is_empty() {
+            tc.arguments = repair_json(&tc.arguments);
+        }
+    }
+
     Ok(StreamResult {
         content: full,
         reasoning_content: reasoning,
@@ -345,6 +353,55 @@ pub async fn call_stream(
         usage,
         finish_reason,
     })
+}
+
+/// Attempt to repair incomplete JSON by appending missing closing delimiters.
+/// Essential for handling partial tool call streaming in unstable mobile networks.
+fn repair_json(input: &str) -> String {
+    if serde_json::from_str::<serde_json::Value>(input).is_ok() {
+        return input.to_string();
+    }
+    let mut repaired = input.to_string();
+    let mut stack = Vec::new();
+    let mut in_string = false;
+    let mut escaped = false;
+
+    for c in input.chars() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if c == '\\' {
+            escaped = true;
+            continue;
+        }
+        if c == '"' {
+            in_string = !in_string;
+            continue;
+        }
+        if in_string {
+            continue;
+        }
+        if c == '{' || c == '[' {
+            stack.push(c);
+        } else if c == '}' {
+            if stack.last() == Some(&'{') { stack.pop(); }
+        } else if c == ']' {
+            if stack.last() == Some(&'[') { stack.pop(); }
+        }
+    }
+
+    if in_string {
+        repaired.push('"');
+    }
+    while let Some(c) = stack.pop() {
+        if c == '{' {
+            repaired.push('}');
+        } else if c == '[' {
+            repaired.push(']');
+        }
+    }
+    repaired
 }
 
 /// Load AGENT.md / AGENTS.md / CLAUDE.md from project root — cached once per session.
@@ -402,4 +459,87 @@ pub async fn call_nonstream(
     let content = data["choices"][0]["message"]["content"].as_str().unwrap_or("(no response)").to_string();
     if render::use_color() { print!("{}", render::md_to_ansi(&content)); } else { println!("{content}"); }
     Ok((content, usage))
+}
+
+// ── Tests ──────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_repair_json_already_valid() {
+        assert_eq!(repair_json(r#"{"path": "src/main.rs"}"#), r#"{"path": "src/main.rs"}"#);
+        assert_eq!(repair_json(r#"{"a":1,"b":[2,3]}"#), r#"{"a":1,"b":[2,3]}"#);
+        assert_eq!(repair_json(r#"[]"#), r#"[]"#);
+        assert_eq!(repair_json(r#"{}"#), r#"{}"#);
+    }
+
+    #[test]
+    fn test_repair_json_missing_brace() {
+        let repaired = repair_json(r#"{"path": "src/main.rs""#);
+        assert!(repaired.ends_with('}'), "should close the object");
+        let parsed: serde_json::Value = serde_json::from_str(&repaired).unwrap();
+        assert_eq!(parsed["path"], "src/main.rs");
+    }
+
+    #[test]
+    fn test_repair_json_missing_bracket() {
+        let repaired = repair_json(r#"{"items": [1, 2, 3"#);
+        assert!(repaired.contains(']'), "should close the array");
+        assert!(repaired.ends_with('}'), "should close the object");
+        let parsed: serde_json::Value = serde_json::from_str(&repaired).unwrap();
+        assert_eq!(parsed["items"][2], 3);
+    }
+
+    #[test]
+    fn test_repair_json_nested() {
+        let repaired = repair_json(r#"{"outer": {"inner": [1, 2"#);
+        assert!(repaired.ends_with('}'), "should end with closing outer object");
+        let parsed: serde_json::Value = serde_json::from_str(&repaired).unwrap();
+        assert_eq!(parsed["outer"]["inner"][1], 2);
+    }
+
+    #[test]
+    fn test_repair_json_unclosed_string() {
+        let repaired = repair_json(r#"{"key": "unfinished"#);
+        assert!(repaired.contains(r#""unfinished""#), "should close the string");
+        assert!(repaired.ends_with('}'), "should close the object");
+        let parsed: serde_json::Value = serde_json::from_str(&repaired).unwrap();
+        assert_eq!(parsed["key"], "unfinished");
+    }
+
+    #[test]
+    fn test_repair_json_empty() {
+        assert_eq!(repair_json(""), "");
+    }
+
+    #[test]
+    fn test_repair_json_array_only() {
+        let repaired = repair_json(r#"["a", "b"#);
+        assert!(repaired.ends_with(']'), "should close the array");
+        let parsed: serde_json::Value = serde_json::from_str(&repaired).unwrap();
+        assert_eq!(parsed[0], "a");
+        assert_eq!(parsed[1], "b");
+    }
+
+    #[test]
+    fn test_resolve_model_name() {
+        assert_eq!(resolve_model_name("v4-pro"), "deepseek-v4-pro");
+        assert_eq!(resolve_model_name("flash"), "deepseek-v4-flash");
+        assert_eq!(resolve_model_name("r1"), "deepseek-r1");
+        assert_eq!(resolve_model_name(""), "");
+        assert_eq!(resolve_model_name("custom"), "custom");
+        // Unknown names pass through
+        assert_eq!(resolve_model_name("V4-PRO"), "V4-PRO");
+        assert_eq!(resolve_model_name("my-model"), "my-model");
+    }
+
+    #[test]
+    fn test_default_model_names() {
+        let flash = default_model(true);
+        assert!(flash.contains("flash"), "flash=true should return flash model");
+        let pro = default_model(false);
+        assert!(pro.contains("pro"), "flash=false should return pro model");
+    }
 }
