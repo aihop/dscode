@@ -112,14 +112,72 @@ pub(crate) fn exec_edit_file(ctx: &ToolCtx, args: &str) -> String {
     let path_str = v["path"].as_str().unwrap_or("");
     let old = v["old"].as_str().unwrap_or("");
     let new = v["new"].as_str().unwrap_or("");
-    let line_hint = v["line"].as_u64();
+    let target = v["target"].as_str();      // NEW: symbol name or line number
+    let new_lines = v["new_lines"].as_str(); // NEW: replacement content for target-based edit
+    let line_hint = v["line"].as_u64().or(v["start_line"].as_u64());
     if path_str.is_empty() {
         return "error: no path".to_string();
     }
-    if old.is_empty() && line_hint.is_none() {
-        return "error: no old text provided (or provide a line hint)".to_string();
-    }
     let full_path = cwd_join(ctx, path_str);
+
+    // New fast path: target-based editing (no old text needed)
+    if let Some(tgt) = target {
+        let content = match std::fs::read_to_string(&full_path) {
+            Ok(c) => c,
+            Err(e) => return format!("error reading {}: {e}", full_path.display()),
+        };
+        let lines: Vec<&str> = content.lines().collect();
+        let range = if let Ok(ln) = tgt.parse::<usize>() {
+            // Target is a line number
+            let start = ln.saturating_sub(1).min(lines.len());
+            (start, start + 1)
+        } else {
+            // Target is a symbol name
+            resolve_symbol_range(&lines, tgt)
+                .unwrap_or_else(|| {
+                    // Fallback: text search
+                    for (i, line) in lines.iter().enumerate() {
+                        if line.contains(tgt) {
+                            let start = i.saturating_sub(1);
+                            return (start, (i + 2).min(lines.len()));
+                        }
+                    }
+                    (0, lines.len())
+                })
+        };
+        let replacement = new_lines.unwrap_or(new);
+        let result = format!(
+            "{}{}{}",
+            lines[..range.0].join("\n"),
+            if range.0 > 0 { "\n" } else { "" },
+            replacement,
+        );
+        let result = if range.1 < lines.len() {
+            format!("{}\n{}", result, lines[range.1..].join("\n"))
+        } else {
+            result
+        };
+        let bak = backup_before_write(&full_path);
+        let bak_info = bak.map(|b| format!(" [backup: {}]", b.display())).unwrap_or_default();
+        match std::fs::write(&full_path, &result) {
+            Ok(_) => {
+                let diff = diff_preview(ctx, path_str);
+                if !diff.is_empty() {
+                    return format!("edited {} (target={}, lines {}-{}){}\n{}",
+                        full_path.display(), tgt, range.0 + 1, range.1, bak_info, diff);
+                } else {
+                    return format!("edited {} (target={}, lines {}-{}){}",
+                        full_path.display(), tgt, range.0 + 1, range.1, bak_info);
+                }
+            }
+            Err(e) => return format!("error writing {}: {e}", full_path.display()),
+        }
+    }
+
+    // Legacy path: old + new based editing
+    if old.is_empty() && line_hint.is_none() {
+        return "error: provide old+new, or target+new_lines, or a line hint".to_string();
+    }
     match std::fs::read_to_string(&full_path) {
         Ok(ref content) => {
             let lines: Vec<&str> = content.lines().collect();
@@ -374,6 +432,84 @@ fn byte_offset_to_line(line_offsets: &[usize], pos: usize) -> usize {
         Ok(idx) => idx + 1,
         Err(idx) => idx.max(1),
     }
+}
+
+// ── Position resolution engine ──────────────────────────────
+
+/// Find the line range [start, end] (0-based, end exclusive) for a symbol.
+/// Supports: fn/struct/enum/trait/type/impl/macro/const/static.
+/// Falls back to text search. Returns None if not found.
+fn resolve_symbol_range(lines: &[&str], target: &str) -> Option<(usize, usize)> {
+    let name = target.trim();
+    if name.is_empty() {
+        return None;
+    }
+
+    let kw_patterns = [
+        format!("fn {}", name),
+        format!("struct {}", name),
+        format!("enum {}", name),
+        format!("trait {}", name),
+        format!("type {}", name),
+    ];
+
+    // Try keyword + name patterns first (fast path)
+    for kw_pat in &kw_patterns {
+        for (i, line) in lines.iter().enumerate() {
+            if line.contains(kw_pat.as_str()) {
+                // Verify this is a definition, not a usage (line starts with keyword or pub)
+                let trimmed = line.trim_start();
+                if trimmed.starts_with("pub") || trimmed.starts_with("fn")
+                    || trimmed.starts_with("struct") || trimmed.starts_with("enum")
+                    || trimmed.starts_with("trait") || trimmed.starts_with("type")
+                {
+                    let end = find_block_end(lines, i);
+                    return Some((i, end));
+                }
+            }
+        }
+    }
+
+    // Try "impl <name>" separately (no word boundary)
+    for (i, line) in lines.iter().enumerate() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("impl") && trimmed.contains(name) {
+            let end = find_block_end(lines, i);
+            return Some((i, end));
+        }
+    }
+
+    // Fallback: direct text search for the target
+    for (i, line) in lines.iter().enumerate() {
+        if line.contains(name) {
+            return Some((i, i + 1));
+        }
+    }
+
+    None
+}
+
+/// Find where a brace-delimited block ends (0-based index, exclusive).
+/// Counts `{` and `}` starting from the given line. Returns the line
+/// index after the closing `}` of the top-level block.
+fn find_block_end(lines: &[&str], start: usize) -> usize {
+    let mut depth: i32 = 0;
+    let mut first_brace_seen = false;
+
+    for i in start..lines.len() {
+        for ch in lines[i].chars() {
+            match ch {
+                '{' => { depth += 1; first_brace_seen = true; }
+                '}' => { depth -= 1; }
+                _ => {}
+            }
+        }
+        // Block ends when depth returns to 0 after the first opening brace
+        if first_brace_seen && depth <= 0 {
+            return i + 1; // exclusive end
+        }
+    }
+    lines.len() // fallback: entire rest of file
 }
 
 // ── List files ────────────────────────────────────────────────
