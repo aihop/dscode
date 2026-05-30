@@ -202,7 +202,14 @@ pub async fn run(args: &ChatArgs) {
     }
 
     let mut rl = DefaultEditor::new().ok();
-    let hist_path = config_dir().join("history.txt");
+    // Per-project history: hash the cwd so history doesn't mix across projects
+    let cwd_hash = {
+        let cwd = std::env::current_dir().unwrap_or_default();
+        let s = cwd.to_string_lossy();
+        let h: u64 = s.bytes().fold(0u64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u64));
+        format!("{:016x}", h)
+    };
+    let hist_path = config_dir().join(format!("history_{}.txt", &cwd_hash[..12]));
     if let Some(ref mut rl) = rl { let _ = rl.load_history(&hist_path); }
 
     let git_branch = get_git_branch();
