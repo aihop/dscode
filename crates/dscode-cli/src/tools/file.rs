@@ -467,52 +467,52 @@ fn byte_offset_to_line(line_offsets: &[usize], pos: usize) -> usize {
 
 // ── Position resolution engine ──────────────────────────────
 
-/// Find the line range [start, end] (0-based, end exclusive) for a symbol.
-/// Supports: fn/struct/enum/trait/type/impl/macro/const/static.
-/// Falls back to text search. Returns None if not found.
-fn resolve_symbol_range(lines: &[&str], target: &str) -> Option<(usize, usize)> {
-    let name = target.trim();
+/// Find the line range [start, end] (0-based, end exclusive) for a target.
+/// Supports: Rust symbols, shell/bash functions, and any language by text search.
+fn resolve_symbol_range(lines: &[&str], name: &str) -> Option<(usize, usize)> {
+    let name = name.trim();
     if name.is_empty() {
         return None;
     }
 
-    let kw_patterns = [
-        format!("fn {}", name),
-        format!("struct {}", name),
-        format!("enum {}", name),
-        format!("trait {}", name),
-        format!("type {}", name),
-    ];
-
-    // Try keyword + name patterns first (fast path)
-    for kw_pat in &kw_patterns {
-        for (i, line) in lines.iter().enumerate() {
-            if line.contains(kw_pat.as_str()) {
-                // Verify this is a definition, not a usage (line starts with keyword or pub)
-                let trimmed = line.trim_start();
-                if trimmed.starts_with("pub") || trimmed.starts_with("fn")
-                    || trimmed.starts_with("struct") || trimmed.starts_with("enum")
-                    || trimmed.starts_with("trait") || trimmed.starts_with("type")
-                {
-                    let end = find_block_end(lines, i);
-                    return Some((i, end));
-                }
-            }
-        }
-    }
-
-    // Try "impl <name>" separately (no word boundary)
+    // Scan all lines for a definition
     for (i, line) in lines.iter().enumerate() {
         let trimmed = line.trim_start();
-        if trimmed.starts_with("impl") && trimmed.contains(name) {
+
+        // Rust definitions
+        let is_rust_def = (trimmed.contains(&format!("fn {}", name))
+            || trimmed.contains(&format!("struct {}", name))
+            || trimmed.contains(&format!("enum {}", name))
+            || trimmed.contains(&format!("trait {}", name))
+            || trimmed.contains(&format!("type {}", name))
+            || (trimmed.starts_with("impl") && trimmed.contains(name)))
+            && (trimmed.starts_with("pub") || trimmed.starts_with("fn")
+                || trimmed.starts_with("struct") || trimmed.starts_with("enum")
+                || trimmed.starts_with("trait") || trimmed.starts_with("type")
+                || trimmed.starts_with("impl"));
+
+        // Shell function definitions: name() {  or  function name {
+        let is_shell_def = trimmed.starts_with(&format!("{}()", name))
+            || trimmed.starts_with(&format!("{} ()", name))
+            || trimmed.starts_with(&format!("function {} ", name));
+
+        if is_rust_def || is_shell_def {
             let end = find_block_end(lines, i);
             return Some((i, end));
         }
     }
 
-    // Fallback: direct text search for the target
+    // Fallback: text search with brace extension
     for (i, line) in lines.iter().enumerate() {
         if line.contains(name) {
+            if line.contains('{') {
+                let end = find_block_end(lines, i);
+                return Some((i, end));
+            }
+            if i + 1 < lines.len() && lines[i + 1].contains('{') {
+                let end = find_block_end(lines, i + 1);
+                return Some((i, end));
+            }
             return Some((i, i + 1));
         }
     }
