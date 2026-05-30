@@ -40,6 +40,53 @@ pub(crate) fn exec_search_code(ctx: &ToolCtx, args: &str) -> String {
     }
 }
 
+pub(crate) fn exec_search_symbols(ctx: &ToolCtx, args: &str) -> String {
+    let v: Value = serde_json::from_str(args).unwrap_or_default();
+    let query = v["query"].as_str().unwrap_or("");
+    let search_path = v["path"].as_str().unwrap_or(".");
+    if query.is_empty() {
+        return "no query provided".to_string();
+    }
+    let full_search_path = cwd_join(ctx, search_path);
+    let mut results = Vec::new();
+    
+    // Patterns for common language definitions (Rust, Python, JS, etc.)
+    let patterns = [
+        format!(r"fn\s+{}\b", query),        // Rust/JS function
+        format!(r"struct\s+{}\b", query),    // Rust/C struct
+        format!(r"class\s+{}\b", query),     // Python/JS/Java class
+        format!(r"enum\s+{}\b", query),      // Rust/C enum
+        format!(r"trait\s+{}\b", query),     // Rust trait
+        format!(r"type\s+{}\b", query),      // Rust/TS type
+        format!(r"def\s+{}\b", query),       // Python def
+        format!(r"pub\s+fn\s+{}\b", query),  // Rust pub fn
+    ];
+
+    for pattern in patterns {
+        let cmd = std::process::Command::new("grep")
+            .args(["-rn", "--include=*.rs", "--include=*.py", "--include=*.js", "--include=*.ts", "--include=*.go", "--include=*.c", "--include=*.cpp"])
+            .args(["-E", &pattern])
+            .arg(&full_search_path)
+            .output();
+        
+        if let Ok(output) = cmd {
+            if output.status.success() {
+                let out = String::from_utf8_lossy(&output.stdout);
+                for line in out.lines() {
+                    results.push(line.to_string());
+                }
+            }
+        }
+        if results.len() > 20 { break; }
+    }
+
+    if results.is_empty() {
+        format!("no definitions found for symbol '{}'", query)
+    } else {
+        format!("Definitions found for '{}':\n{}", query, results.join("\n"))
+    }
+}
+
 // ── File search (fuzzy filename) ──────────────────────────────
 
 pub(crate) fn exec_file_search(ctx: &ToolCtx, args: &str) -> String {

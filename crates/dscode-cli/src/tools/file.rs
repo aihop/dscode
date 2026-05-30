@@ -97,16 +97,21 @@ pub(crate) fn exec_edit_file(ctx: &ToolCtx, args: &str) -> String {
                 Err(EditMatchError::NotFound) => {
                     let snippet = if let Some(ln) = line_hint {
                         let idx = (ln as usize).saturating_sub(1).min(lines.len().saturating_sub(1));
-                        let start = idx.saturating_sub(3);
-                        let end = (idx + 3).min(lines.len());
+                        let start = idx.saturating_sub(5);
+                        let end = (idx + 5).min(lines.len());
                         let snip: Vec<String> = lines[start..end].iter().enumerate().map(|(i, l)| {
                             format!("{:>6}  {}", start + i + 1, l)
                         }).collect();
-                        format!(" near line {}. Lines around it:\n{}", ln, snip.join("\n"))
+                        format!(" near line {}. Lines in the file around there:\n{}", ln, snip.join("\n"))
                     } else {
-                        String::new()
+                        // If no hint, show the first 10 lines of the file to help the model realize where it is
+                        let end = 10.min(lines.len());
+                        let snip: Vec<String> = lines[..end].iter().enumerate().map(|(i, l)| {
+                            format!("{:>6}  {}", i + 1, l)
+                        }).collect();
+                        format!(". First few lines of the file:\n{}", snip.join("\n"))
                     };
-                    format!("error: match not found in {}{}", full_path.display(), snippet)
+                    format!("error: match not found in {}{}\nTIP: Ensure your 'old' block matches the file EXACTLY, including comments and blank lines. Use 'read_file' again if unsure.", full_path.display(), snippet)
                 }
                 Err(EditMatchError::Ambiguous(count)) => {
                     if let Some(ln) = line_hint {
@@ -191,26 +196,27 @@ fn find_fuzzy_matches(
     let max_start = search_lines.end.saturating_sub(old_lines.len().saturating_sub(1));
     let mut matches = Vec::new();
     for start in search_lines.start..max_start {
-        let mut all_match = true;
-        for (i, old_line) in old_lines.iter().enumerate() {
-            let file_line = content_trimmed.get(start + i).unwrap_or(&"");
-            let old_norm: String = old_line.split_whitespace().collect::<Vec<_>>().join(" ");
-            let file_norm: String = file_line.split_whitespace().collect::<Vec<_>>().join(" ");
-            
-            if old_norm != file_norm {
-                all_match = false;
-                break;
+            let mut all_match = true;
+            for (i, old_line) in old_lines.iter().enumerate() {
+                let file_line = content_trimmed.get(start + i).unwrap_or(&"");
+                // Normalization: strip all whitespace to compare content only
+                let old_norm: String = old_line.chars().filter(|c| !c.is_whitespace()).collect();
+                let file_norm: String = file_line.chars().filter(|c| !c.is_whitespace()).collect();
+                
+                if old_norm != file_norm {
+                    all_match = false;
+                    break;
+                }
+            }
+            if all_match {
+                let byte_start = line_offsets[start];
+                let byte_end = line_offsets
+                    .get(start + old_lines.len())
+                    .copied()
+                    .unwrap_or(content.len());
+                matches.push((byte_start, byte_end.saturating_sub(byte_start)));
             }
         }
-        if all_match {
-            let byte_start = line_offsets[start];
-            let byte_end = line_offsets
-                .get(start + old_lines.len())
-                .copied()
-                .unwrap_or(content.len());
-            matches.push((byte_start, byte_end.saturating_sub(byte_start)));
-        }
-    }
     
     // If no match found and we have a line hint, try even more relaxed matching
     if matches.is_empty() && line_hint.is_some() {

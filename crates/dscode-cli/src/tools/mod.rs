@@ -85,6 +85,7 @@ impl ToolHandler for DscHandler {
 
             // Search tools
             "search_code"      => search::exec_search_code(&self.ctx, &args),
+            "search_symbols"   => search::exec_search_symbols(&self.ctx, &args),
             "file_search"      => search::exec_file_search(&self.ctx, &args),
             "web_search"       => search::exec_web_search(&self.ctx, &args),
             "fetch_url"        => search::exec_fetch_url(&self.ctx, &args),
@@ -253,6 +254,20 @@ fn tool_specs() -> Vec<ToolSpec> {
             output_schema: json!({}),
             supports_parallel_tool_calls: true,
             timeout_ms: Some(15_000),
+        },
+        ToolSpec {
+            name: "search_symbols".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Symbol name (function, struct, etc.)"},
+                    "path": {"type": "string", "description": "Optional subdirectory to search"}
+                },
+                "required": ["query"]
+            }),
+            output_schema: json!({}),
+            supports_parallel_tool_calls: true,
+            timeout_ms: None,
         },
         ToolSpec {
             name: "file_search".into(),

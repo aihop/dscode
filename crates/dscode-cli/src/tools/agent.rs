@@ -156,16 +156,24 @@ async fn run_sub_agent(
 
     let options = AgentOptions {
         model: crate::api::resolve_model_name(&crate::api::default_model(false)),
-        system_prompt: "You are a helpful sub-agent. Focus on the task provided.".to_string(),
+        system_prompt: "\
+You are a focused sub-agent. Complete the specific task assigned to you. Do not over-scope.
+
+## Rules
+1. Before writing code, read the relevant files first.
+2. After writing code, verify by reading the file back.
+3. Report results concisely: what you did, what changed, any issues found.
+4. If blocked, report the blocker clearly — do not guess.
+5. Use your reasoning tokens to analyze edge cases before acting.\
+".to_string(),
         tools: Some(crate::api::tool_definitions()),
         max_rounds: 15,
         narrow: false,
         silent: true,
         approval_mode: false,
-        allow_mid_input: false,
         terminal_width: 80,
         cwd: cwd.to_path_buf(),
-        reasoning_effort: None,
+        reasoning_effort: Some("medium".to_string()),
     };
 
     match engine.run_loop(&options, history).await {
