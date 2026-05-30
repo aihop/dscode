@@ -363,6 +363,7 @@ You are running directly in the project root directory. Always use relative path
 - **Preferred Edit Method**: For small changes in large files, **prefer `apply_patch`** over `edit_file` — it uses git's fuzzy matching and is more robust. For whole-file changes, use `write_file`.
 - **Edit Precision**: When using `edit_file`, always include the `line` hint parameter to avoid ambiguity. Read the file fresh before editing — never rely on memory of its content.
 - **Batch Reads**: Read multiple files in a single round when you need context from different parts of the project. Reduces total rounds.
+- **Batch Shell**: Combine multiple shell commands into one `run_shell` call using `&&` or `;`. Each separate call costs a round — batch aggressively.
 - **Verification Loop**: After every significant code change, run `cargo check` (or relevant linter) via `run_shell` to catch syntax errors immediately.
 - **Type safety**: Prefer Rust's type system over runtime checks.
 - **Error handling**: Use Result, attach context. Avoid unwrap/expect except in tests.
@@ -410,7 +411,7 @@ You are running directly in the project root directory. Always use relative path
                 model: model.clone(),
                 system_prompt: sys_content,
                 tools: tools_list,
-                max_rounds: 50,
+                max_rounds: 100,
                 narrow,
                 silent: false,
                 approval_mode: args.approve,
