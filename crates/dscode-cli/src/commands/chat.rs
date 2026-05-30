@@ -204,13 +204,24 @@ pub async fn run(args: &ChatArgs) {
         .build().unwrap();
 
       let store = open_store();
+      let cwd = std::env::current_dir().unwrap_or_default();
       let (thread_id, mut messages) = if let Some(sid) = &args.session {
           match store.as_ref().and_then(|s| load_store_thread(s, sid)) {
               Some((id, msgs)) => { eprintln!("(resumed session {})", &id[..8]); (id, msgs) }
               None => (new_thread(&store, &model), Vec::new())
           }
     } else {
-        (new_thread(&store, &model), Vec::new())
+        // Smart resume: if the latest session was updated within 30 min, continue it
+        // Otherwise start fresh (old session = different task)
+        const AUTO_RESUME_SECS: i64 = 30 * 60;
+        let now = chrono::Utc::now().timestamp();
+        match store.as_ref().and_then(|s| latest_store_thread(s, &cwd)) {
+            Some((id, msgs, _updated_at)) if now - _updated_at < AUTO_RESUME_SECS => {
+                eprintln!("(resumed)");
+                (id, msgs)
+            }
+            _ => (new_thread(&store, &model), Vec::new()),
+        }
     };
 
     let narrow = is_narrow_terminal();
@@ -532,6 +543,17 @@ fn load_store_thread(store: &StateStore, id: &str) -> Option<(String, Vec<Messag
     None
 }
 
+/// Find the most recent session for the current project directory,
+/// returning (id, messages, updated_at) if one exists.
+fn latest_store_thread(store: &StateStore, cwd: &std::path::Path) -> Option<(String, Vec<Message>, i64)> {
+    use codewhale_state::ThreadListFilters;
+    let threads = store.list_threads(ThreadListFilters { include_archived: false, limit: Some(50) }).ok()?;
+    let t = threads.into_iter()
+        .filter(|t| t.cwd == cwd)
+        .max_by_key(|t| t.updated_at)?;
+    let msgs = store.list_messages(&t.id, None).unwrap_or_default().into_iter().map(msg_from_record).collect();
+    Some((t.id, msgs, t.updated_at))
+}
 
 fn get_git_branch() -> Option<String> {
     let out = std::process::Command::new("git").args(["rev-parse", "--abbrev-ref", "HEAD"]).output().ok()?;
