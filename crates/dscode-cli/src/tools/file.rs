@@ -5,6 +5,24 @@
 use crate::tools::{cwd_join, ToolCtx};
 use serde_json::{json, Value};
 
+/// Backup a file before destructive write. Returns the backup path or None.
+/// Backups go to ~/.dscode/backups/ with timestamp and original filename.
+pub(crate) fn backup_before_write(path: &std::path::Path) -> Option<std::path::PathBuf> {
+    if !path.exists() {
+        return None;
+    }
+    let backup_dir = crate::utils::dscode_dir().join("backups");
+    std::fs::create_dir_all(&backup_dir).ok()?;
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH).ok()?
+        .as_secs();
+    let safe_name = path.to_string_lossy()
+        .replace('/', "_")
+        .replace('\\', "_");
+    let bak_path = backup_dir.join(format!("{}.{}.bak", safe_name, ts));
+    std::fs::copy(path, &bak_path).ok().map(|_| bak_path)
+}
+
 /// Parse JSON tool arguments, returning a clear error message on failure.
 macro_rules! parse_args {
     ($args:expr) => {{
@@ -72,13 +90,15 @@ pub(crate) fn exec_write_file(ctx: &ToolCtx, args: &str) -> String {
     if let Some(parent) = full_path.parent() {
         std::fs::create_dir_all(parent).ok();
     }
+    let bak = backup_before_write(&full_path);
     match std::fs::write(&full_path, content) {
         Ok(_) => {
+            let bak_info = bak.map(|b| format!(" [backup: {}]", b.display())).unwrap_or_default();
             let diff = diff_preview(ctx, path_str);
             if !diff.is_empty() {
-                format!("written {} ({} bytes)\n{}", full_path.display(), content.len(), diff)
+                format!("written {} ({} bytes){}\n{}", full_path.display(), content.len(), bak_info, diff)
             } else {
-                format!("written {} ({} bytes)", full_path.display(), content.len())
+                format!("written {} ({} bytes){}", full_path.display(), content.len(), bak_info)
             }
         }
         Err(e) => format!("error writing {}: {e}", full_path.display()),
@@ -143,13 +163,15 @@ pub(crate) fn exec_edit_file(ctx: &ToolCtx, args: &str) -> String {
                 }
                 Ok((pos, match_len)) => {
                     let new_content = format!("{}{}{}", &content[..pos], new, &content[pos + match_len..]);
+                    let bak = backup_before_write(&full_path);
+                    let bak_info = bak.as_ref().map(|b| format!(" [backup: {}]", b.display())).unwrap_or_default();
                     match std::fs::write(&full_path, &new_content) {
                         Ok(_) => {
                             let diff = diff_preview(ctx, path_str);
                             if !diff.is_empty() {
-                                format!("edited {}\n{}", full_path.display(), diff)
+                                format!("edited {}{}\n{}", full_path.display(), bak_info, diff)
                             } else {
-                                format!("edited {}", full_path.display())
+                                format!("edited {}{}", full_path.display(), bak_info)
                             }
                         }
                         Err(e) => format!("error writing {}: {e}", full_path.display()),

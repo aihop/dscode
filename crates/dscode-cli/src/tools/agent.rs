@@ -109,6 +109,7 @@ pub(crate) async fn exec_fim_edit(ctx: &ToolCtx, args: &str) -> String {
                 return "FIM generated empty content".to_string();
             }
             let new_content = format!("{}{}{}", &content[..pa_start + prefix_anchor.len()], generated, &content[sa_start..]);
+            crate::tools::file::backup_before_write(&full_path);
             match std::fs::write(&full_path, &new_content) {
                 Ok(_) => {
                     let diff = crate::tools::file::diff_preview(ctx, path);
