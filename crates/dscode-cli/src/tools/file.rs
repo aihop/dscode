@@ -116,8 +116,8 @@ pub(crate) fn exec_edit_file(ctx: &ToolCtx, args: &str) -> String {
     if path_str.is_empty() {
         return "error: no path".to_string();
     }
-    if old.is_empty() {
-        return "error: no old text provided".to_string();
+    if old.is_empty() && line_hint.is_none() {
+        return "error: no old text provided (or provide a line hint)".to_string();
     }
     let full_path = cwd_join(ctx, path_str);
     match std::fs::read_to_string(&full_path) {
@@ -126,6 +126,43 @@ pub(crate) fn exec_edit_file(ctx: &ToolCtx, args: &str) -> String {
             let match_result = find_edit_match(content, &lines, old, line_hint);
             match match_result {
                 Err(EditMatchError::NotFound) => {
+                    // Fallback: if line_hint is provided, do line-based replacement
+                    if let Some(ln) = line_hint {
+                        let start = (ln as usize).saturating_sub(1).min(lines.len());
+                        let old_line_count = old.lines().count().max(1);
+                        let end = (start + old_line_count).min(lines.len());
+                        let new_content = format!(
+                            "{}{}{}",
+                            lines[..start].join("\n"),
+                            if start > 0 { "\n" } else { "" },
+                            new,
+                        );
+                        // Add remaining lines after the replaced range
+                        let new_content = if end < lines.len() {
+                            format!("{}\n{}", new_content, lines[end..].join("\n"))
+                        } else {
+                            new_content
+                        };
+                        // Only apply if the old text roughly matches what we're replacing
+                        let replaced_section: String = lines[start..end].join("\n");
+                        let similarity = text_similarity(old, &replaced_section);
+                        if similarity > 0.3 || old.len() < 20 {
+                            let bak = backup_before_write(&full_path);
+                            let bak_info = bak.map(|b| format!(" [backup: {}]", b.display())).unwrap_or_default();
+                            match std::fs::write(&full_path, &new_content) {
+                                Ok(_) => {
+                                    let diff = diff_preview(ctx, path_str);
+                                    if !diff.is_empty() {
+                                        return format!("edited {} (line-based, similarity={:.0}%){}\n{}", full_path.display(), similarity * 100.0, bak_info, diff);
+                                    } else {
+                                        return format!("edited {} (line-based, similarity={:.0}%){}", full_path.display(), similarity * 100.0, bak_info);
+                                    }
+                                }
+                                Err(e) => return format!("error writing {}: {e}", full_path.display()),
+                            }
+                        }
+                    }
+                    // Show detailed error with mismatch info
                     let mut snippet = if let Some(ln) = line_hint {
                         let idx = (ln as usize).saturating_sub(1).min(lines.len().saturating_sub(1));
                         let start = idx.saturating_sub(10);
@@ -481,4 +518,19 @@ pub(crate) fn diff_preview(ctx: &ToolCtx, path_str: &str) -> String {
         }
         _ => String::new(),
     }
+}
+
+/// Simple character-level similarity between two strings (0.0 - 1.0).
+/// Used by edit_file to decide whether a line-based fallback is safe.
+fn text_similarity(a: &str, b: &str) -> f64 {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    if a.is_empty() && b.is_empty() { return 1.0; }
+    if a.is_empty() || b.is_empty() { return 0.0; }
+    let max_len = a.len().max(b.len()) as f64;
+    let mut matches = 0usize;
+    for i in 0..a.len().min(b.len()) {
+        if a[i] == b[i] { matches += 1; }
+    }
+    matches as f64 / max_len
 }
