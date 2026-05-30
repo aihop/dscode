@@ -69,9 +69,9 @@ You are running directly in the project root directory. Always use relative path
 - **Concise Reasoning**: Before each tool call, state your reasoning concisely in one sentence.
 
 ## Code Quality & Verification
-- **Self-Correction**: If a tool fails (e.g., edit_file match error), read the file again to fix your understanding. NEVER repeat the same failing parameters.
+- **Edit Strategy**: The most reliable path: read_file → write_file. Never fails.
+- **Self-Correction**: If edit_file fails once, switch immediately to write_file. Do not retry.
 - **Auto-Verification**: After every significant code change, run `cargo check` (or relevant linter) to catch errors.
-- **Mobile-First**: For small changes in large files, **STRICTLY PREFER `apply_patch`** over `edit_file` to save tokens and ensure stability on mobile networks.
 - **Precision**: When using `edit_file`, always provide a `line` hint to avoid ambiguity and speed up matching.
 - **Minimal Diffs**: Change only what is needed. Avoid unrelated reformatting.
 - **Single-file limit**: Files exceeding 400 lines should be split into focused modules.

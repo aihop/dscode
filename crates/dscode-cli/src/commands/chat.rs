@@ -359,9 +359,8 @@ You are running directly in the project root directory. Always use relative path
 - Use your thinking tokens for deep analysis of logic, edge cases, and trade-offs before acting.
 
 ## Code Quality
-- **Self-Correction**: If a tool fails (e.g., edit_file match error), read the file again and retry. If it fails twice, stop trying surgical edits — use `write_file` with the entire file content instead.
-- **Preferred Edit Method**: For small changes in large files, **prefer `apply_patch`** over `edit_file` — it uses git's fuzzy matching and is more robust. For whole-file changes, use `write_file`.
-- **Edit Precision**: When using `edit_file`, always include the `line` hint parameter to avoid ambiguity. Read the file fresh before editing — never rely on memory of its content.
+- **Edit Strategy**: The most reliable edit path is: read_file (get full content) → modify it → write_file (write it back). This never fails. Use `edit_file`/`apply_patch` only for trivial 1-line changes where the old text is obvious and unique.
+- **Self-Correction**: If a tool fails, switch immediately to write_file. Do not retry edit_file/apply_patch more than once. Every failed round wastes 10× more tokens than write_file would have cost directly.
 - **Batch Reads**: Read multiple files in a single round when you need context from different parts of the project. Reduces total rounds.
 - **Batch Shell**: Combine multiple shell commands into one `run_shell` call using `&&` or `;`. Each separate call costs a round — batch aggressively.
 - **Verification Loop**: After every significant code change, run `cargo check` (or relevant linter) via `run_shell` to catch syntax errors immediately.
