@@ -7,6 +7,7 @@ use crate::api::{self, resolve_model_name, resolve_api_key, resolve_base_url};
 use crate::engine::{AgentEngine, AgentOptions};
 use crate::tools;
 use crate::utils::{is_narrow_terminal, terminal_width};
+use rpassword; // for hidden API key input on first run
 use chrono::Utc;
 use clap::Args;
 use rustyline::DefaultEditor;
@@ -169,10 +170,33 @@ pub async fn run(args: &ChatArgs) {
     let model = resolve_model_name(
         &args.model.clone().unwrap_or_else(|| api::default_model(true)),
     );
-    let api_key = resolve_api_key().unwrap_or_else(|| {
-        eprintln!("error: no DeepSeek API key found");
-        std::process::exit(1);
-    });
+    let api_key = if let Some(key) = resolve_api_key() {
+        key
+    } else {
+        eprintln!("\x1B[33mNo API key found. Set it now to start chatting.\x1B[0m");
+        let input = rpassword::prompt_password("Enter your DeepSeek API key (sk-...): ")
+            .unwrap_or_else(|_| {
+                print!("Enter your DeepSeek API key (sk-...): ");
+                io::stdout().flush().unwrap();
+                let mut buf = String::new();
+                io::stdin().read_line(&mut buf).unwrap();
+                buf
+            });
+        let key = input.trim().to_string();
+        if key.is_empty() || !key.starts_with("sk-") {
+            eprintln!("\x1B[31merror: invalid API key\x1B[0m");
+            std::process::exit(1);
+        }
+        // Save to config
+        let path = crate::utils::dscode_dir().join("config.toml");
+        if let Some(parent) = path.parent() { std::fs::create_dir_all(parent).ok(); }
+        if let Ok(mut store) = codewhale_config::ConfigStore::load(Some(path.clone())) {
+            store.config.api_key = Some(key.clone());
+            let _ = store.save();
+        }
+        eprintln!("\x1B[32m✓ API key saved\x1B[0m");
+        key
+    };
     let base_url = resolve_base_url();
     let client = reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(30))
@@ -180,17 +204,13 @@ pub async fn run(args: &ChatArgs) {
         .build().unwrap();
 
       let store = open_store();
-      let cwd = std::env::current_dir().unwrap_or_default();
       let (thread_id, mut messages) = if let Some(sid) = &args.session {
-          match store.as_ref().and_then(|s| load_store_thread(s, sid)) {            Some((id, msgs)) => { eprintln!("(resumed session {})", &id[..8]); (id, msgs) }
-            None => (new_thread(&store, &model), Vec::new())
-        }
-    } else if args.new {
-        (new_thread(&store, &model), Vec::new())
+          match store.as_ref().and_then(|s| load_store_thread(s, sid)) {
+              Some((id, msgs)) => { eprintln!("(resumed session {})", &id[..8]); (id, msgs) }
+              None => (new_thread(&store, &model), Vec::new())
+          }
     } else {
-          match store.as_ref().and_then(|s| latest_store_thread(s, &cwd)) {            Some((id, msgs)) => { eprintln!("(resumed latest session {})", &id[..8]); (id, msgs) }
-            None => (new_thread(&store, &model), Vec::new())
-        }
+        (new_thread(&store, &model), Vec::new())
     };
 
     let narrow = is_narrow_terminal();
@@ -512,14 +532,7 @@ fn load_store_thread(store: &StateStore, id: &str) -> Option<(String, Vec<Messag
     None
 }
 
-  fn latest_store_thread(store: &StateStore, cwd: &std::path::Path) -> Option<(String, Vec<Message>)> {
-      let threads = store.list_threads(ThreadListFilters { include_archived: false, limit: Some(100) }).ok()?;
-      let t = threads.into_iter()
-          .filter(|t| t.cwd == cwd)
-          .max_by_key(|t| t.updated_at)?;
-      let msgs = store.list_messages(&t.id, None).unwrap_or_default().into_iter().map(msg_from_record).collect();
-      Some((t.id, msgs))
-  }
+
 fn get_git_branch() -> Option<String> {
     let out = std::process::Command::new("git").args(["rev-parse", "--abbrev-ref", "HEAD"]).output().ok()?;
     if out.status.success() {
