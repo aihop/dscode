@@ -432,7 +432,7 @@ You are running directly in the project root directory. Always use relative path
 use codewhale_state::{StateStore, ThreadListFilters, ThreadMetadata, ThreadStatus, SessionSource};
 
 fn db_path() -> PathBuf {
-    dirs::data_dir().unwrap_or_else(|| PathBuf::from("~/.local/share")).join("dscode").join("state.db")
+    crate::utils::dscode_dir().join("state.db")
 }
 
 fn open_store() -> Option<StateStore> {
@@ -522,7 +522,7 @@ fn get_git_branch() -> Option<String> {
 }
 
 fn config_dir() -> PathBuf {
-    dirs::config_dir().unwrap_or_else(|| PathBuf::from("~/.config")).join("dscode")
+    crate::utils::dscode_dir()
 }
 
 fn rl_readline_raw(rl: &mut Option<DefaultEditor>, hist_path: &PathBuf) -> String {

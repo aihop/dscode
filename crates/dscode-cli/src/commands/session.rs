@@ -28,10 +28,7 @@ fn open_store() -> Option<StateStore> {
 }
 
 fn db_path() -> std::path::PathBuf {
-    dirs::data_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("~/.local/share"))
-        .join("dscode")
-        .join("state.db")
+    crate::utils::dscode_dir().join("state.db")
 }
 
 /// Find thread by exact or prefix id.

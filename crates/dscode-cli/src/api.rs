@@ -59,7 +59,7 @@ pub fn resolve_base_url() -> String {
 }
 
 fn config_path() -> PathBuf {
-    dirs::config_dir().unwrap_or_else(|| PathBuf::from("~/.config")).join("dscode").join("config.toml")
+    crate::utils::dscode_dir().join("config.toml")
 }
 
 /// Ensure a default config exists. Creates one on first run.

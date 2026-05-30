@@ -24,10 +24,7 @@ pub async fn run(cmd: &ConfigCommands) {
 }
 
 fn config_path() -> std::path::PathBuf {
-    dirs::config_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("~/.config"))
-        .join("dscode")
-        .join("config.toml")
+    crate::utils::dscode_dir().join("config.toml")
 }
 
 fn load_store() -> ConfigStore {

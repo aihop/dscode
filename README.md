@@ -231,7 +231,7 @@ The CLI adapts to your terminal width — no horizontal scrolling on narrow phon
 
 ## Configuration
 
-Config lives at `~/.config/dscode/config.toml`:
+Config lives at `~/.dscode/config.toml`:
 
 ```toml
 api_key = "sk-..."
@@ -241,7 +241,7 @@ model = "deepseek-v4-pro"
 base_url = "https://api.deepseek.com/beta"
 ```
 
-Memory file: `~/.local/share/dscode/memory.md`
+Memory file: `~/.dscode/memory.md`
 
 ## Architecture
 

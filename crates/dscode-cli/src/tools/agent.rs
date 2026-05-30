@@ -363,10 +363,7 @@ pub(crate) async fn exec_test_runner(ctx: &ToolCtx, args: &str) -> String {
 // ── Memory: persistent cross-session storage ────────────────
 
 fn memory_path() -> std::path::PathBuf {
-    dirs::data_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("~/.local/share"))
-        .join("dscode")
-        .join("memory.md")
+    crate::utils::dscode_dir().join("memory.md")
 }
 
 /// Load memory content for injection into system prompt.

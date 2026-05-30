@@ -30,3 +30,12 @@ pub fn terminal_width() -> u16 {
 pub fn is_narrow_terminal() -> bool {
     terminal_width() <= 72
 }
+
+/// Unified dscode home directory (~/.dscode).
+/// Replaces scattered ~/.config/dscode and ~/.local/share/dscode paths.
+pub fn dscode_dir() -> std::path::PathBuf {
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .unwrap_or_else(|_| "~".to_string());
+    std::path::PathBuf::from(home).join(".dscode")
+}
