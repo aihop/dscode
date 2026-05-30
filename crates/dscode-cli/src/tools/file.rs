@@ -144,13 +144,24 @@ pub(crate) fn exec_edit_file(ctx: &ToolCtx, args: &str) -> String {
                         format!(". First 15 lines:\n{}", snip.join("\n"))
                     };
                     
-                    // Add a tip about common issues
-                    snippet.push_str("\n\nTIP: Matching failed. This usually happens due to:\n");
-                    snippet.push_str("1. Indentation mismatch (DeepSeek sometimes misses leading spaces)\n");
-                    snippet.push_str("2. Hidden characters or trailing whitespace\n");
-                    snippet.push_str("3. You are looking at an outdated version of the file\n");
-                    snippet.push_str("4. The code block you provided spans too many lines and has a typo in the middle\n\n");
-                    snippet.push_str("ACTION: Use 'read_file' or 'list_symbols' to verify the exact content before retrying.");
+                    // Show the first line of old text vs what's at that line in the file
+                    let old_first = old.lines().next().unwrap_or("").trim();
+                    let expected_line = line_hint.unwrap_or(1) as usize;
+                    let file_at_line = lines.get(expected_line.saturating_sub(1)).unwrap_or(&"").trim();
+                    snippet.push_str("\n\nTIP: Matching failed.\n");
+                    if !old_first.is_empty() && !file_at_line.is_empty() {
+                        snippet.push_str(&format!(
+                            "  Your old text starts with:  \"{}\"\n  File content around line {}: \"{}\"\n\n",
+                            &old_first[..old_first.len().min(60)],
+                            expected_line,
+                            &file_at_line[..file_at_line.len().min(60)],
+                        ));
+                    }
+                    snippet.push_str("Common causes:\n");
+                    snippet.push_str("1. Indentation mismatch — DeepSeek sometimes drops leading spaces\n");
+                    snippet.push_str("2. You are looking at an outdated version of the file\n");
+                    snippet.push_str("3. The code block has a typo in the middle\n\n");
+                    snippet.push_str("ACTION: Use 'read_file' to get the exact content before retrying.");
                     
                     format!("error: match not found in {}{}", full_path.display(), snippet)
                 }
