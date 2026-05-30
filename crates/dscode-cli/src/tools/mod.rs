@@ -306,9 +306,11 @@ fn tool_specs() -> Vec<ToolSpec> {
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "patch": {"type": "string", "description": "Unified diff/patch content"}
+                    "patch": {"type": "string", "description": "Unified diff/patch content. Standard diff -u format with @@ headers."},
+                    "path": {"type": "string", "description": "File to patch (required for native patcher)"},
+                    "fuzz": {"type": "integer", "description": "Fuzzy matching lines (0-50, default 10). Higher = more tolerant of context mismatch."}
                 },
-                "required": ["patch"]
+                "required": ["patch", "path"]
             }),
             output_schema: json!({}),
             supports_parallel_tool_calls: false,
@@ -695,7 +697,7 @@ fn tool_description(name: &str) -> &'static str {
         "git_show"    => "Show details of a specific commit/revision: diff, metadata, and message.",
         "git_blame"   => "Show who last modified each line of a file. Optional line range.",
         "file_search" => "Search for files by name (fuzzy match). Returns matching file paths.",
-        "apply_patch" => "Apply a unified-diff patch to the working tree (via git apply).",
+        "apply_patch" => "Apply a unified-diff patch with native fuzzy matching. Provide patch (diff -u format) and path. Supports up to 50 lines of fuzzy context matching.",
         "git_status"  => "Show working tree status (modified, staged, untracked files).",
         "git_diff"    => "Show working tree diff (unstaged or staged changes). Optional path scope.",
         "git_add"     => "Stage file(s) for commit. Path can be a file or glob pattern.",

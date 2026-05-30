@@ -619,28 +619,213 @@ pub(crate) fn exec_list_files(ctx: &ToolCtx, args: &str) -> String {
     }
 }
 
-// ── Apply patch ───────────────────────────────────────────────
+// ── Apply patch (native unified diff parser + fuzzy matcher) ──
+
+/// A single hunk from a unified diff.
+struct Hunk {
+    old_start: usize,   // 1-based
+    old_count: usize,
+    new_start: usize,
+    lines: Vec<HunkLine>,
+}
+
+enum HunkLine {
+    Context(String),
+    Remove(String),
+    Add(String),
+}
+
+/// Parse a unified diff string into hunks.
+fn parse_unified_diff(diff: &str) -> Vec<Hunk> {
+    let mut hunks = Vec::new();
+    let mut current: Option<Hunk> = None;
+
+    for line in diff.lines() {
+        if line.starts_with("@@") {
+            if let Some(h) = current.take() {
+                hunks.push(h);
+            }
+            // Parse @@ -old_start,old_count +new_start,new_count @@
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            let old_part = parts.get(1).unwrap_or(&"-0,0").trim_start_matches('-');
+            let new_part = parts.get(2).unwrap_or(&"+0,0").trim_start_matches('+');
+            let old_start = old_part.split(',').next().unwrap_or("0").parse().unwrap_or(1);
+            let old_count = old_part.split(',').nth(1).unwrap_or("0").parse().unwrap_or(1);
+            let new_start = new_part.split(',').next().unwrap_or("0").parse().unwrap_or(1);
+            current = Some(Hunk {
+                old_start: old_start.max(1),
+                old_count: old_count.max(1),
+                new_start: new_start.max(1),
+                lines: Vec::new(),
+            });
+        } else if let Some(ref mut h) = current {
+            if line.starts_with("---") || line.starts_with("+++") {
+                continue;
+            }
+            if line.starts_with('-') {
+                h.lines.push(HunkLine::Remove(line[1..].to_string()));
+            } else if line.starts_with('+') {
+                h.lines.push(HunkLine::Add(line[1..].to_string()));
+            } else {
+                // Context line (starts with ' ' or no prefix for first/last)
+                let content = if line.starts_with(' ') { &line[1..] } else { line };
+                h.lines.push(HunkLine::Context(content.to_string()));
+            }
+        }
+    }
+    if let Some(h) = current.take() {
+        hunks.push(h);
+    }
+    hunks
+}
+
+/// Find the best matching position for a hunk's context lines in the file.
+/// Returns the 0-based line index, or None.
+/// Uses progressive fuzzy matching: exact → whitespace-tolerant → token-level.
+fn find_hunk_position(lines: &[&str], hunk: &Hunk, max_fuzz: usize) -> Option<usize> {
+    // Extract context lines (lines that should exist in the file)
+    let ctx_texts: Vec<&str> = hunk.lines.iter()
+        .filter_map(|l| match l {
+            HunkLine::Context(t) | HunkLine::Remove(t) => Some(t.as_str()),
+            HunkLine::Add(_) => None,
+        })
+        .collect();
+    if ctx_texts.is_empty() {
+        return None;
+    }
+
+    // Try at the expected position first
+    let expected = hunk.old_start.saturating_sub(1);
+    if check_match(lines, expected, &ctx_texts, 0) {
+        return Some(expected);
+    }
+
+    // Search nearby with increasing fuzz
+    for fuzz in 1..=max_fuzz {
+        // Search forward
+        if expected + fuzz < lines.len() && check_match(lines, expected + fuzz, &ctx_texts, fuzz) {
+            return Some(expected + fuzz);
+        }
+        // Search backward
+        if expected >= fuzz && check_match(lines, expected - fuzz, &ctx_texts, fuzz) {
+            return Some(expected - fuzz);
+        }
+    }
+    None
+}
+
+/// Check if the context lines match at a given position in the file.
+/// fuzz_level: 0=exact, 1=trimmed, 2+=token-level
+fn check_match(lines: &[&str], start: usize, ctx: &[&str], fuzz: usize) -> bool {
+    for (i, ctx_line) in ctx.iter().enumerate() {
+        let file_line = match lines.get(start + i) {
+            Some(l) => l,
+            None => return false,
+        };
+        match fuzz {
+            0 => {
+                if file_line != ctx_line { return false; }
+            }
+            1 => {
+                if file_line.trim() != ctx_line.trim() { return false; }
+            }
+            _ => {
+                let f_tokens: Vec<&str> = file_line.split_whitespace().collect();
+                let c_tokens: Vec<&str> = ctx_line.split_whitespace().collect();
+                // At least 70% of non-empty tokens must match
+                let min_matches = (c_tokens.len() as f64 * 0.7).ceil() as usize;
+                let matches = c_tokens.iter().filter(|t| f_tokens.contains(t)).count();
+                if matches < min_matches { return false; }
+            }
+        }
+    }
+    true
+}
 
 pub(crate) fn exec_apply_patch(ctx: &ToolCtx, args: &str) -> String {
     let v = parse_args!(args);
     let patch = v["patch"].as_str().unwrap_or("");
+    let fuzz = v["fuzz"].as_u64().unwrap_or(10).min(50) as usize;
     if patch.is_empty() {
         return "error: no patch provided".to_string();
     }
-    let tmp = std::env::temp_dir().join(format!("dscode-patch-{}.diff", std::process::id()));
-    let write_ok = std::fs::write(&tmp, patch).is_ok();
-    if !write_ok {
-        return "error: could not write patch file".to_string();
+    let path_str = v["path"].as_str().unwrap_or("");
+    if path_str.is_empty() {
+        return "error: no path provided".to_string();
     }
-    let result = std::process::Command::new("git")
-        .args(["apply", &tmp.to_string_lossy()])
-        .current_dir(&ctx.cwd)
-        .output();
-    let _ = std::fs::remove_file(&tmp);
-    match result {
-        Ok(o) if o.status.success() => "patch applied successfully".to_string(),
-        Ok(o) => format!("patch failed:\n{}", String::from_utf8_lossy(&o.stderr)),
-        Err(e) => format!("git apply error: {e}"),
+    let full_path = cwd_join(ctx, path_str);
+    let content = match std::fs::read_to_string(&full_path) {
+        Ok(c) => c,
+        Err(e) => return format!("error reading {}: {e}", full_path.display()),
+    };
+    let lines: Vec<&str> = content.lines().collect();
+
+    let hunks = parse_unified_diff(patch);
+    if hunks.is_empty() {
+        return "error: no valid hunks found in patch".to_string();
+    }
+
+    let mut result_lines: Vec<String> = lines.iter().map(|s| s.to_string()).collect();
+    let mut applied = 0u32;
+    let mut errors: Vec<String> = Vec::new();
+    let mut total_hunks = hunks.len() as u32;
+    let mut fuzz_used = 0u32;
+
+    // Apply hunks in reverse order to preserve line numbers
+    for hunk in hunks.iter().rev() {
+        // Build borrowed slice for find_hunk_position (which expects &[&str])
+        let borrow_ref: Vec<&str> = result_lines.iter().map(|s| s.as_str()).collect();
+        let pos = find_hunk_position(&borrow_ref, hunk, fuzz);
+        match pos {
+            Some(p) => {
+                let remove_count = hunk.lines.iter()
+                    .filter(|l| !matches!(l, HunkLine::Add(_)))
+                    .count();
+                let expected = hunk.old_start.saturating_sub(1);
+                if p != expected { fuzz_used += 1; }
+                let end = (p + remove_count).min(result_lines.len());
+                // Split into three parts: before, removed, after
+                let before = result_lines[..p].to_vec();
+                let after = if end < result_lines.len() { result_lines[end..].to_vec() } else { Vec::new() };
+                // Keep lines before, add new lines, then lines after
+                let mut new_lines: Vec<String> = Vec::with_capacity(before.len() + hunk.lines.len() + after.len());
+                new_lines.extend(before);
+                for l in &hunk.lines {
+                    if let HunkLine::Add(t) = l {
+                        new_lines.push(t.clone());
+                    }
+                }
+                new_lines.extend(after);
+                result_lines = new_lines;
+                applied += 1;
+            }
+            None => {
+                errors.push(format!("hunk at line {}: could not find match", hunk.old_start));
+            }
+        }
+    }
+
+    if errors.len() == total_hunks as usize {
+        return format!("patch failed: no hunks could be applied\n{}", errors.join("\n"));
+    }
+
+    // Write result
+    let bak = backup_before_write(&full_path);
+    let output = result_lines.join("\n");
+    match std::fs::write(&full_path, &output) {
+        Ok(_) => {
+            let fuzz_note = if fuzz_used > 0 { format!(" ({} fuzzy matches)", fuzz_used) } else { String::new() };
+            let mut result = format!("patch applied: {}/{} hunks{fuzz_note}", applied, total_hunks);
+            if !errors.is_empty() {
+                result.push_str(&format!("\nwarnings:\n{}", errors.join("\n")));
+            }
+            let diff = diff_preview(ctx, path_str);
+            if !diff.is_empty() {
+                result.push_str(&format!("\n{}", diff));
+            }
+            result
+        }
+        Err(e) => format!("error writing {}: {e}", full_path.display()),
     }
 }
 
