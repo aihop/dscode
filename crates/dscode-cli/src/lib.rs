@@ -21,10 +21,6 @@ use clap::{Parser, Subcommand};
 pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Commands>,
-
-    /// Show version info
-    #[arg(long, short = 'V')]
-    pub version: bool,
 }
 
 #[derive(Debug, Subcommand)]
@@ -91,11 +87,6 @@ pub fn run() -> std::process::ExitCode {
 
 fn inner_run() -> std::process::ExitCode {
     let cli = Cli::parse();
-
-    if cli.version {
-        println!("dscode v{}", env!("CARGO_PKG_VERSION"));
-        return std::process::ExitCode::SUCCESS;
-    }
 
     let rt = tokio::runtime::Runtime::new().unwrap();
 
