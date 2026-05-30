@@ -644,7 +644,7 @@ pub fn tool_definitions() -> Vec<Value> {
 
 /// Names of core tools — always sent first to save ~1,000 tok/req.
 pub const CORE_TOOL_NAMES: &[&str] = &[
-    "read_file", "write_file", "edit_file", "list_files", "run_shell", "search_code", "list_symbols",
+    "read_file", "write_file", "edit_file", "list_files", "run_shell", "search_code", "list_symbols", "batch",
 ];
 
 /// All tool names (for expansion tracking).
