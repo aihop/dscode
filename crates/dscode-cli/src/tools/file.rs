@@ -71,6 +71,13 @@ pub(crate) fn exec_read_file(ctx: &ToolCtx, args: &str) -> String {
                 out.push_str(&format!("... ({} more lines)\n", total - end_line));
             }
             out.push_str("</file>");
+            // For large files, inject a symbol map to help the model navigate
+            if total > 500 && start_line == 0 {
+                let symbols = build_symbol_map(&lines);
+                if !symbols.is_empty() {
+                    out.push_str(&format!("\n## Symbols ({})\n{}", total, symbols));
+                }
+            }
             out
         }
         Err(e) => format!("<error reading {}: {e}>", full_path.display()),
@@ -511,6 +518,52 @@ fn resolve_symbol_range(lines: &[&str], target: &str) -> Option<(usize, usize)> 
     }
 
     None
+}
+
+/// Build a compact symbol map for large files (>500 lines).
+/// Scans for fn/struct/enum/trait/type/impl/mod definitions and their line ranges.
+fn build_symbol_map(lines: &[&str]) -> String {
+    let kw_pairs = [
+        ("fn ", "fn"), ("struct ", "struct"), ("enum ", "enum"),
+        ("trait ", "trait"), ("type ", "type"), ("impl ", "impl"),
+        ("mod ", "mod"), ("pub mod ", "mod"),
+    ];
+    let mut entries: Vec<String> = Vec::new();
+
+    for (i, line) in lines.iter().enumerate() {
+        let trimmed = line.trim_start();
+
+        // Skip non-definition lines quickly
+        if !trimmed.starts_with("pub") && !trimmed.starts_with("fn")
+            && !trimmed.starts_with("struct") && !trimmed.starts_with("enum")
+            && !trimmed.starts_with("trait") && !trimmed.starts_with("type")
+            && !trimmed.starts_with("impl") && !trimmed.starts_with("mod")
+        {
+            continue;
+        }
+
+        for (kw, label) in &kw_pairs {
+            // Find keyword in the trimmed line at word boundary
+            if let Some(pos) = trimmed.find(kw) {
+                // Extract the name after the keyword
+                let rest = &trimmed[pos + kw.len()..].trim_start();
+                let name = rest.split(|c: char| c.is_whitespace() || c == '{' || c == '(' || c == '<' || c == ':').next().unwrap_or("");
+                if name.is_empty() || name.starts_with('{') { continue; }
+
+                let end = find_block_end(lines, i);
+                let line_range = if end > i + 1 {
+                    format!("{}-{}", i + 1, end)
+                } else {
+                    (i + 1).to_string()
+                };
+                entries.push(format!("  {} {}:{}", label, name, line_range));
+                break;
+            }
+        }
+
+        if entries.len() >= 40 { break; } // cap at 40 entries
+    }
+    entries.join("\n")
 }
 
 /// Find where a brace-delimited block ends (0-based index, exclusive).
