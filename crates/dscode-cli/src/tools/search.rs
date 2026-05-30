@@ -191,59 +191,63 @@ pub(crate) fn exec_file_search(ctx: &ToolCtx, args: &str) -> String {
     }
 }
 
-// ── Web search ────────────────────────────────────────────────
+// ── Shared reqwest client ─────────────────────────────────────
 
-pub(crate) fn exec_web_search(_ctx: &ToolCtx, args: &str) -> String {
+fn http_client() -> &'static reqwest::Client {
+    use std::sync::OnceLock;
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .timeout(std::time::Duration::from_secs(30))
+            .build().unwrap()
+    })
+}
+
+// ── Web search (via DuckDuckGo lite) ─────────────────────────
+
+pub(crate) async fn exec_web_search(_ctx: &ToolCtx, args: &str) -> String {
     let v: Value = serde_json::from_str(args).unwrap_or_default();
     let query = v["query"].as_str().unwrap_or("");
     if query.is_empty() {
         return "no query provided".to_string();
     }
     let encoded = urlencoding(query);
-    match std::process::Command::new("curl")
-        .args(["-s", "-L", "-o", "-", "--max-time", "10",
-            &format!("https://lite.duckduckgo.com/lite/?q={}", encoded)])
-        .output()
-    {
-        Ok(output) if output.status.success() => {
-            let html = String::from_utf8_lossy(&output.stdout);
-            extract_duckduckgo_results(&html)
-        }
-        _ => match std::process::Command::new("curl")
-            .args(["-s", "-L", "-o", "-", "--max-time", "10",
-                &format!("https://api.duckduckgo.com/?q={}&format=json", encoded)])
-            .output()
-        {
-            Ok(output) if output.status.success() => {
-                String::from_utf8_lossy(&output.stdout).to_string()
+    let url = format!("https://lite.duckduckgo.com/lite/?q={}", encoded);
+    match http_client().get(&url).send().await {
+        Ok(resp) if resp.status().is_success() => {
+            match resp.text().await {
+                Ok(html) => extract_duckduckgo_results(&html),
+                Err(e) => format!("web search parse error: {e}"),
             }
-            _ => "web search unavailable (install curl)".to_string(),
-        },
+        }
+        Ok(resp) => format!("web search status: {}", resp.status()),
+        Err(e) => format!("web search failed: {e}"),
     }
 }
 
-// ── Fetch URL ─────────────────────────────────────────────────
+// ── Fetch URL (via reqwest) ──────────────────────────────────
 
-pub(crate) fn exec_fetch_url(_ctx: &ToolCtx, args: &str) -> String {
+pub(crate) async fn exec_fetch_url(_ctx: &ToolCtx, args: &str) -> String {
     let v: Value = serde_json::from_str(args).unwrap_or_default();
     let url = v["url"].as_str().unwrap_or("");
     if url.is_empty() {
         return "no URL provided".to_string();
     }
-    match std::process::Command::new("curl")
-        .args(["-s", "-L", "-o", "-", "--max-time", "15", url])
-        .output()
-    {
-        Ok(output) if output.status.success() => {
-            let mut body = String::from_utf8_lossy(&output.stdout).to_string();
-            if body.len() > 10000 {
-                body = format!("{}... (truncated, {} total)", &body[..10000], body.len());
+    match http_client().get(url).send().await {
+        Ok(resp) if resp.status().is_success() => {
+            match resp.text().await {
+                Ok(body) => {
+                    if body.len() > 10000 {
+                        format!("{}... (truncated, {} total)", &body[..10000], body.len())
+                    } else {
+                        body
+                    }
+                }
+                Err(e) => format!("fetch read error: {e}"),
             }
-            body
         }
-        Ok(output) => format!("fetch failed (exit {}): {}",
-            output.status.code().unwrap_or(-1),
-            String::from_utf8_lossy(&output.stderr)),
+        Ok(resp) => format!("fetch status: {} ({})", resp.status(), url),
         Err(e) => format!("fetch failed: {e}"),
     }
 }

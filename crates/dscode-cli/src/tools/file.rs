@@ -5,10 +5,21 @@
 use crate::tools::{cwd_join, ToolCtx};
 use serde_json::{json, Value};
 
+/// Parse JSON tool arguments, returning a clear error message on failure.
+macro_rules! parse_args {
+    ($args:expr) => {{
+        let __args = $args;
+        match serde_json::from_str::<Value>(__args) {
+            Ok(v) => v,
+            Err(e) => return format!("error: invalid JSON arguments: {e}"),
+        }
+    }};
+}
+
 // ── Read file ─────────────────────────────────────────────────
 
 pub(crate) fn exec_read_file(ctx: &ToolCtx, args: &str) -> String {
-    let v: Value = serde_json::from_str(args).unwrap_or_default();
+    let v = parse_args!(args);
     let path_str = v["path"].as_str().unwrap_or("");
     if path_str.is_empty() {
         return "error: no path provided".to_string();
@@ -51,7 +62,7 @@ pub(crate) fn exec_read_file(ctx: &ToolCtx, args: &str) -> String {
 // ── Write file ────────────────────────────────────────────────
 
 pub(crate) fn exec_write_file(ctx: &ToolCtx, args: &str) -> String {
-    let v: Value = serde_json::from_str(args).unwrap_or_default();
+    let v = parse_args!(args);
     let path_str = v["path"].as_str().unwrap_or("");
     let content = v["content"].as_str().unwrap_or("");
     if path_str.is_empty() {
@@ -77,7 +88,7 @@ pub(crate) fn exec_write_file(ctx: &ToolCtx, args: &str) -> String {
 // ── Edit file ─────────────────────────────────────────────────
 
 pub(crate) fn exec_edit_file(ctx: &ToolCtx, args: &str) -> String {
-    let v: Value = serde_json::from_str(args).unwrap_or_default();
+    let v = parse_args!(args);
     let path_str = v["path"].as_str().unwrap_or("");
     let old = v["old"].as_str().unwrap_or("");
     let new = v["new"].as_str().unwrap_or("");
@@ -288,7 +299,7 @@ fn byte_offset_to_line(line_offsets: &[usize], pos: usize) -> usize {
 // ── List files ────────────────────────────────────────────────
 
 pub(crate) fn exec_list_files(ctx: &ToolCtx, args: &str) -> String {
-    let v: Value = serde_json::from_str(args).unwrap_or_default();
+    let v = parse_args!(args);
     let path_str = v["path"].as_str().unwrap_or("");
     if path_str.is_empty() {
         return "error: no path provided".to_string();
@@ -318,7 +329,7 @@ pub(crate) fn exec_list_files(ctx: &ToolCtx, args: &str) -> String {
 // ── Apply patch ───────────────────────────────────────────────
 
 pub(crate) fn exec_apply_patch(ctx: &ToolCtx, args: &str) -> String {
-    let v: Value = serde_json::from_str(args).unwrap_or_default();
+    let v = parse_args!(args);
     let patch = v["patch"].as_str().unwrap_or("");
     if patch.is_empty() {
         return "error: no patch provided".to_string();
@@ -343,7 +354,7 @@ pub(crate) fn exec_apply_patch(ctx: &ToolCtx, args: &str) -> String {
 // ── Get file info ─────────────────────────────────────────────
 
 pub(crate) fn exec_get_file_info(ctx: &ToolCtx, args: &str) -> String {
-    let v: Value = serde_json::from_str(args).unwrap_or_default();
+    let v = parse_args!(args);
     let path_str = v["path"].as_str().unwrap_or("");
     if path_str.is_empty() {
         return "error: no path provided".to_string();
@@ -383,7 +394,7 @@ pub(crate) fn exec_get_file_info(ctx: &ToolCtx, args: &str) -> String {
 // ── List tree ─────────────────────────────────────────────────
 
 pub(crate) fn exec_list_tree(ctx: &ToolCtx, args: &str) -> String {
-    let v: Value = serde_json::from_str(args).unwrap_or_default();
+    let v = parse_args!(args);
     let path_str = v["path"].as_str().unwrap_or(".");
     let max_depth = v["depth"].as_u64().unwrap_or(2) as usize;
     let root = cwd_join(ctx, path_str);

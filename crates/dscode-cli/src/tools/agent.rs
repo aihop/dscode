@@ -360,6 +360,78 @@ pub(crate) async fn exec_test_runner(ctx: &ToolCtx, args: &str) -> String {
     }
 }
 
+// ── Memory: persistent cross-session storage ────────────────
+
+fn memory_path() -> std::path::PathBuf {
+    dirs::data_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("~/.local/share"))
+        .join("dscode")
+        .join("memory.md")
+}
+
+/// Load memory content for injection into system prompt.
+pub(crate) fn load_memory() -> String {
+    let path = memory_path();
+    if let Ok(content) = std::fs::read_to_string(&path) {
+        let trimmed = content.trim();
+        if !trimmed.is_empty() {
+            format!("\n## User Memory\n{}\n", trimmed)
+        } else {
+            String::new()
+        }
+    } else {
+        String::new()
+    }
+}
+
+pub(crate) fn exec_remember(args: &str) -> String {
+    let v: Value = serde_json::from_str(args).unwrap_or_default();
+    let key = v["key"].as_str().unwrap_or("");
+    let value = v["value"].as_str().unwrap_or("");
+    if key.is_empty() || value.is_empty() {
+        return "error: both key and value required".to_string();
+    }
+    let path = memory_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
+    let entry = format!("{}: {}\n", key.trim(), value.trim());
+    match std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        Ok(mut file) => {
+            use std::io::Write;
+            if let Err(e) = file.write_all(entry.as_bytes()) {
+                return format!("error writing memory: {e}");
+            }
+            format!("remembered: {} = {}", key, value)
+        }
+        Err(e) => format!("error opening memory: {e}"),
+    }
+}
+
+pub(crate) fn exec_recall(args: &str) -> String {
+    let v: Value = serde_json::from_str(args).unwrap_or_default();
+    let query = v["query"].as_str().unwrap_or("");
+    if query.is_empty() {
+        return "error: no query provided".to_string();
+    }
+    let path = memory_path();
+    let content = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(_) => return "no memory found".to_string(),
+    };
+    let q_lower = query.to_lowercase();
+    let mut matches: Vec<&str> = content.lines()
+        .filter(|l| l.to_lowercase().contains(&q_lower))
+        .collect();
+    if matches.is_empty() {
+        return format!("nothing remembered matching '{query}'");
+    }
+    if matches.len() > 20 {
+        matches.truncate(20);
+    }
+    format!("Memory matches for '{}':\n{}", query, matches.join("\n"))
+}
+
 // ── User input tool ───────────────────────────────────────────
 
 pub(crate) async fn exec_request_user_input(_args: &str) -> String {

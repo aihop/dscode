@@ -35,6 +35,33 @@ pub struct ChatArgs {
     pub think: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CliMode {
+    Agent,
+    Plan,
+}
+
+impl CliMode {
+    fn label(&self) -> &'static str {
+        match self {
+            CliMode::Agent => "agent",
+            CliMode::Plan => "plan",
+        }
+    }
+    fn is_plan(&self) -> bool {
+        matches!(self, CliMode::Plan)
+    }
+}
+
+/// Read-only tools available in Plan mode + checklist for planning.
+const PLAN_TOOLS: &[&str] = &[
+    "read_file", "list_files", "list_tree", "get_file_info",
+    "search_code", "file_search", "web_search", "fetch_url",
+    "git_log", "git_show", "git_blame", "git_status", "git_diff",
+    "review",
+    "checklist_write", "checklist_add", "checklist_update", "checklist_list",
+];
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Message {
     role: String,
@@ -183,16 +210,22 @@ pub async fn run(args: &ChatArgs) {
         .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()));
 
     let engine = AgentEngine::new(client.clone(), base_url.clone(), api_key.clone());
+    let mut mode = CliMode::Agent;
 
     loop {
         tw = terminal_width();
         let prompt = if narrow {
-            if let Some(ref b) = git_branch { format!("\x1B[35m{b}\x1B[0m [{}]> ", messages.len()) }
-            else { format!("[{}]> ", messages.len()) }
+            let mode_tag = if mode.is_plan() { "\x1B[33mP\x1B[0m " } else { "" };
+            if let Some(ref b) = git_branch { format!("{mode_tag}\x1B[35m{b}\x1B[0m [{}]> ", messages.len()) }
+            else { format!("{mode_tag}[{}]> ", messages.len()) }
         } else {
             let dir = project_dir.as_deref().unwrap_or("");
             let branch = git_branch.as_deref().unwrap_or("");
-            format!("\x1B[36m{dir}\x1B[0m \x1B[35m{branch}\x1B[0m [{}]> ", messages.len())
+            if mode.is_plan() {
+                format!("\x1B[36m{dir}\x1B[0m \x1B[35m{branch}\x1B[0m [\x1B[33mplan\x1B[0m {}]> ", messages.len())
+            } else {
+                format!("\x1B[36m{dir}\x1B[0m \x1B[35m{branch}\x1B[0m [{}]> ", messages.len())
+            }
         };
 
         let input = if let Some(ref mut rl) = rl {
@@ -246,16 +279,36 @@ pub async fn run(args: &ChatArgs) {
             }
             "/help" => {
                 println!("/exit  quit    /clear  clear screen    /save  save session");
+                println!("/mode plan    read-only research mode    /mode agent  full tool mode");
                 continue;
             }
             "/save" => { persist_session(&store, &thread_id, &model, &messages); println!("saved"); continue; }
+            "/mode" => {
+                println!("Current mode: {}  (use /mode plan or /mode agent)", mode.label());
+                continue;
+            }
+            cmd if cmd.starts_with("/mode ") => {
+                let arg = cmd.strip_prefix("/mode ").unwrap_or("");
+                match arg.trim() {
+                    "plan" => { mode = CliMode::Plan; eprintln!("\x1B[33m○ plan mode\x1B[0m (read-only research + planning)"); }
+                    "agent" => { mode = CliMode::Agent; eprintln!("\x1B[36m● agent mode\x1B[0m (full tools)"); }
+                    other => eprintln!("unknown mode '{other}' — use plan or agent"),
+                }
+                continue;
+            }
             _ => {}
         }
 
         messages.push(Message { role: "user".into(), content: input, reasoning_content: None, created_at: Utc::now().timestamp() });
         compact_via_llm(&mut messages, &client, &base_url, &api_key, narrow).await;
 
-          let tools_list = if args.plain { None } else { Some(api::tool_definitions_filtered(tools::CORE_TOOL_NAMES)) };        
+          let tools_list = if args.plain {
+              None
+          } else if mode.is_plan() {
+              Some(api::tool_definitions_filtered(PLAN_TOOLS))
+          } else {
+              Some(api::tool_definitions_filtered(tools::CORE_TOOL_NAMES))
+          };        
         let default_system = "\
 You are dscode, a mobile-first AI coding agent powered by DeepSeek.
 You are running directly in the project root directory. Always use relative paths for tools.
@@ -291,9 +344,20 @@ You are running directly in the project root directory. Always use relative path
 ";
 
         let agent_prompt = api::load_agent_md();
-        let sys_content = if let Some(ref ap) = agent_prompt { format!("{}\n\n{}", default_system, ap) }
-            else if let Some(sp) = &args.system { format!("{}\n\n{}", default_system, sp) }
-            else { default_system.to_string() };
+        let plan_prefix = if mode.is_plan() {
+            "\n## Current Mode: Plan\nYou are in **Plan mode** — read-only research and design.\n\
+             - Use read_file, search_code, list_files, git tools to investigate the codebase.\n\
+             - Use checklist_write to produce a structured plan before any implementation.\n\
+             - You CANNOT edit files, run arbitrary shell commands, or make git commits.\n\
+             - When you have a complete plan, tell the user to switch to agent mode with /mode agent.\n"
+        } else { "" };
+        let sys_content = if let Some(ref ap) = agent_prompt {
+            format!("{}{}\n\n{}", default_system, plan_prefix, ap)
+        } else if let Some(sp) = &args.system {
+            format!("{}{}\n\n{}", default_system, plan_prefix, sp)
+        } else {
+            format!("{}{}", default_system, plan_prefix)
+        };
 
         let history: Vec<serde_json::Value> = messages.iter().map(|m| {
             let mut j = serde_json::json!({"role": m.role, "content": m.content});

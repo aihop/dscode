@@ -36,19 +36,21 @@ impl AgentEngine {
         // Split into two system messages for DeepSeek prompt caching:
         // First message is the fixed prompt (cacheable across conversations).
         // Second message is dynamic environment info (not cacheable).
+        let env_content = format!(
+            "## Environment\n\
+             - Current Working Directory: {}\n\
+             - Terminal: {}\n\
+             - Language: Rust (edition 2021, MSRV 1.75)\n\
+             - Tools Available: {} tools (files, git, shell, search, web, agent)\n\
+             - Context Window: 1M tokens\n",
+            options.cwd.display(),
+            if options.narrow { "narrow/mobile" } else { "standard" },
+            crate::tools::ALL_TOOL_NAMES.len(),
+        );
+        let memory = crate::tools::agent::load_memory();
         let mut api_msgs = vec![
             json!({"role": "system", "content": options.system_prompt}),
-            json!({"role": "system", "content": format!(
-                "## Environment\n\
-                 - Current Working Directory: {}\n\
-                 - Terminal: {}\n\
-                 - Language: Rust (edition 2021, MSRV 1.75)\n\
-                 - Tools Available: {} tools (files, git, shell, search, web, agent)\n\
-                 - Context Window: 1M tokens\n",
-                options.cwd.display(),
-                if options.narrow { "narrow/mobile" } else { "standard" },
-                crate::tools::ALL_TOOL_NAMES.len(),
-            )}),
+            json!({"role": "system", "content": format!("{}{}", env_content, memory)}),
         ];
         api_msgs.extend(history);
         let mut total_usage = UsageInfo::default();
@@ -171,36 +173,84 @@ impl AgentEngine {
                             let path = serde_json::from_str::<Value>(&tc.arguments).ok()
                                 .and_then(|v| v["path"].as_str().map(|s| s.to_string()));
                             if let Some(p) = path {
-                                if p.ends_with(".rs") {
-                                    if !options.silent { eprintln!("\x1B[90m─ auto-checking {}...\x1B[0m", p); }
-                                    let check_cmd = std::process::Command::new("cargo")
-                                        .args(["check", "--message-format=json"])
-                                        .current_dir(&options.cwd)
-                                        .output();
-                                    if let Ok(output) = check_cmd {
-                                        let stdout = String::from_utf8_lossy(&output.stdout);
-                                        let mut errors = Vec::new();
-                                        for line in stdout.lines() {
-                                            if let Ok(msg) = serde_json::from_str::<Value>(line) {
-                                                if msg["reason"] == "compiler-message" {
-                                                    let message = &msg["message"];
-                                                    if message["level"] == "error" {
-                                                        let rendered = message["rendered"].as_str().unwrap_or("");
-                                                        if !rendered.is_empty() {
-                                                            errors.push(rendered.to_string());
+                                let ext = std::path::Path::new(&p).extension().and_then(|e| e.to_str()).unwrap_or("");
+                                let check_result = match ext {
+                                    "rs" => {
+                                        if !options.silent { eprintln!("\x1B[90m─ cargo check...\x1B[0m", ); }
+                                        let output = std::process::Command::new("cargo")
+                                            .args(["check", "--message-format=json"])
+                                            .current_dir(&options.cwd)
+                                            .output();
+                                        if let Ok(output) = output {
+                                            let stdout = String::from_utf8_lossy(&output.stdout);
+                                            let mut errors = Vec::new();
+                                            for line in stdout.lines() {
+                                                if let Ok(msg) = serde_json::from_str::<Value>(line) {
+                                                    if msg["reason"] == "compiler-message" {
+                                                        let message = &msg["message"];
+                                                        if message["level"] == "error" {
+                                                            let rendered = message["rendered"].as_str().unwrap_or("");
+                                                            if !rendered.is_empty() {
+                                                                errors.push(rendered.to_string());
+                                                            }
                                                         }
                                                     }
                                                 }
+                                                if errors.len() > 3 { break; }
                                             }
-                                            if errors.len() > 3 { break; }
-                                        }
-                                        if !errors.is_empty() {
-                                            result.push_str("\n\n[VERIFY FAIL]\n");
-                                            result.push_str(&errors.join("\n"));
-                                            result.push_str("\nTIP: You have introduced syntax errors. Please fix them immediately.");
-                                        } else {
-                                            result.push_str("\n[VERIFY PASS] Compilation OK");
-                                        }
+                                            if !errors.is_empty() {
+                                                Some((false, errors.join("\n")))
+                                            } else {
+                                                Some((true, String::new()))
+                                            }
+                                        } else { None }
+                                    }
+                                    "py" => {
+                                        if !options.silent { eprintln!("\x1B[90m─ python check...\x1B[0m"); }
+                                        let full = if p.starts_with('/') { std::path::PathBuf::from(&p) } else { options.cwd.join(&p) };
+                                        let output = std::process::Command::new("python3")
+                                            .args(["-m", "py_compile", &full.to_string_lossy()])
+                                            .output().or_else(|_| std::process::Command::new("python")
+                                                .args(["-m", "py_compile", &full.to_string_lossy()]).output());
+                                        run_simple_check(output)
+                                    }
+                                    "js" => {
+                                        if !options.silent { eprintln!("\x1B[90m─ node check...\x1B[0m"); }
+                                        let full = if p.starts_with('/') { std::path::PathBuf::from(&p) } else { options.cwd.join(&p) };
+                                        run_simple_check(std::process::Command::new("node")
+                                            .args(["--check", &full.to_string_lossy()]).output())
+                                    }
+                                    "ts" => {
+                                        if !options.silent { eprintln!("\x1B[90m─ tsc check...\x1B[0m"); }
+                                        let full = if p.starts_with('/') { std::path::PathBuf::from(&p) } else { options.cwd.join(&p) };
+                                        run_simple_check(std::process::Command::new("npx")
+                                            .args(["-p", "typescript", "tsc", "--noEmit", &full.to_string_lossy()]).output())
+                                    }
+                                    "go" => {
+                                        if !options.silent { eprintln!("\x1B[90m─ go vet...\x1B[0m"); }
+                                        let full = if p.starts_with('/') { std::path::PathBuf::from(&p) } else { options.cwd.join(&p) };
+                                        run_simple_check(std::process::Command::new("go")
+                                            .args(["vet", &full.to_string_lossy()]).output())
+                                    }
+                                    "c" | "h" => {
+                                        if !options.silent { eprintln!("\x1B[90m─ gcc check...\x1B[0m"); }
+                                        let full = if p.starts_with('/') { std::path::PathBuf::from(&p) } else { options.cwd.join(&p) };
+                                        run_simple_check(std::process::Command::new("gcc")
+                                            .args(["-fsyntax-only", &full.to_string_lossy()]).output())
+                                    }
+                                    "cpp" | "hpp" => {
+                                        if !options.silent { eprintln!("\x1B[90m─ g++ check...\x1B[0m"); }
+                                        let full = if p.starts_with('/') { std::path::PathBuf::from(&p) } else { options.cwd.join(&p) };
+                                        run_simple_check(std::process::Command::new("g++")
+                                            .args(["-fsyntax-only", &full.to_string_lossy()]).output())
+                                    }
+                                    _ => None,
+                                };
+                                if let Some((pass, msg)) = check_result {
+                                    if pass {
+                                        result.push_str("\n[VERIFY PASS] Syntax OK");
+                                    } else {
+                                        result.push_str(&format!("\n\n[VERIFY FAIL]\n{}\nTIP: Fix the errors above.", msg));
                                     }
                                 }
                             }
@@ -253,6 +303,30 @@ impl AgentEngine {
               }
           }
         Ok((api_msgs, total_usage))
+    }
+}
+
+/// Run a simple checker command and return (pass, error_message).
+/// Used for non-Rust language checks (python, node, gcc, etc.)
+fn run_simple_check(result: std::io::Result<std::process::Output>) -> Option<(bool, String)> {
+    match result {
+        Ok(output) => {
+            if output.status.success() {
+                Some((true, String::new()))
+            } else {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let mut msg = String::new();
+                if !stderr.is_empty() { msg.push_str(&stderr); }
+                if !stdout.is_empty() {
+                    if !msg.is_empty() { msg.push('\n'); }
+                    msg.push_str(&stdout);
+                }
+                if msg.len() > 2000 { msg = format!("{}... (truncated)", &msg[..2000]); }
+                Some((false, msg))
+            }
+        }
+        Err(_) => None,
     }
 }
 

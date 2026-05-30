@@ -159,21 +159,46 @@ pub async fn call_stream(
         }
     }
 
-    let response = client
-        .post(&url)
-        .header("Authorization", format!("Bearer {api_key}"))
-        .header("Content-Type", "application/json")
-        .header("Accept", "text/event-stream")
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| format!("connection failed: {e}"))?;
-
-    if !response.status().is_success() {
-        let status = response.status();
-        let text = response.text().await.unwrap_or_default();
-        return Err(format!("API {status}: {text}"));
-    }
+    // Auto-retry with exponential backoff for mobile network resilience
+    const MAX_RETRIES: u32 = 3;
+    let mut last_err = String::new();
+    let response = 'retry: {
+        for attempt in 0..MAX_RETRIES {
+            let result = client
+                .post(&url)
+                .header("Authorization", format!("Bearer {api_key}"))
+                .header("Content-Type", "application/json")
+                .header("Accept", "text/event-stream")
+                .json(&body)
+                .send()
+                .await;
+            match result {
+                Ok(resp) if resp.status().is_success() => break 'retry resp,
+                Ok(resp) => {
+                    let status = resp.status();
+                    if status.is_server_error() {
+                        let text = resp.text().await.unwrap_or_default();
+                        last_err = format!("API {status}: {text}");
+                        if last_err.len() > 200 { last_err.truncate(200); }
+                    } else {
+                        let text = resp.text().await.unwrap_or_default();
+                        return Err(format!("API {status}: {text}"));
+                    }
+                }
+                Err(e) => {
+                    last_err = format!("connection failed: {e}");
+                }
+            }
+            if attempt + 1 < MAX_RETRIES {
+                let delay = std::time::Duration::from_millis(500 * 2u64.pow(attempt));
+                if !silent {
+                    eprintln!("\x1B[33m\n[retry {}/{}: {}]\x1B[0m", attempt + 1, MAX_RETRIES, last_err);
+                }
+                tokio::time::sleep(delay).await;
+            }
+        }
+        return Err(format!("API request failed after {MAX_RETRIES} attempts: {last_err}"));
+    };
 
     let mut full = String::new();
     let mut reasoning = String::new();

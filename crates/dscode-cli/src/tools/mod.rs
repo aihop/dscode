@@ -87,8 +87,8 @@ impl ToolHandler for DscHandler {
             "search_code"      => search::exec_search_code(&self.ctx, &args),
             "search_symbols"   => search::exec_search_symbols(&self.ctx, &args),
             "file_search"      => search::exec_file_search(&self.ctx, &args),
-            "web_search"       => search::exec_web_search(&self.ctx, &args),
-            "fetch_url"        => search::exec_fetch_url(&self.ctx, &args),
+            "web_search"       => search::exec_web_search(&self.ctx, &args).await,
+            "fetch_url"        => search::exec_fetch_url(&self.ctx, &args).await,
 
             // Agent & System tools
             "review"           => agent::exec_review(&self.ctx, &args).await,
@@ -103,6 +103,8 @@ impl ToolHandler for DscHandler {
             "test_runner"      => agent::exec_test_runner(&self.ctx, &args).await,
             "request_user_input" => agent::exec_request_user_input(&args).await,
             "run_shell"        => agent::exec_run_shell(&self.ctx, &args),
+            "remember"         => agent::exec_remember(&args),
+            "recall"           => agent::exec_recall(&args),
 
             _ => format!("unknown tool: {}", invocation.tool_name),
         };
@@ -494,6 +496,29 @@ fn tool_specs() -> Vec<ToolSpec> {
             output_schema: json!({}), supports_parallel_tool_calls: false, timeout_ms: Some(300_000),
         },
         ToolSpec {
+            name: "remember".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "key": {"type": "string", "description": "Fact/rule name"},
+                    "value": {"type": "string", "description": "Value or description"}
+                },
+                "required": ["key", "value"]
+            }),
+            output_schema: json!({}), supports_parallel_tool_calls: true, timeout_ms: Some(5_000),
+        },
+        ToolSpec {
+            name: "recall".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Search query to match against stored memory"}
+                },
+                "required": ["query"]
+            }),
+            output_schema: json!({}), supports_parallel_tool_calls: true, timeout_ms: Some(5_000),
+        },
+        ToolSpec {
             name: "checklist_write".into(),
             input_schema: json!({
                 "type": "object",
@@ -596,6 +621,7 @@ pub const ALL_TOOL_NAMES: &[&str] = &[
     "review", "fim_edit", "agent_open", "agent_eval", "agent_close",
     "test_runner", "request_user_input",
     "checklist_write", "checklist_add", "checklist_update", "checklist_list",
+    "remember", "recall",
 ];
 
 /// Return tool definitions filtered to only include named tools.
@@ -640,6 +666,8 @@ fn tool_description(name: &str) -> &'static str {
         "checklist_list"  => "List all checklist items with their current status.",
         "test_runner" => "Run tests (default: cargo test) and return structured results.",
         "request_user_input" => "Ask the user 1-3 short questions and return their selections.",
+        "remember"     => "Store a fact, rule, or convention in persistent memory. The model can recall it in future sessions. Example: remember(error_handling, prefer anyhow).",
+        "recall"       => "Search persistent memory for previously stored facts or conventions. Returns matching entries.",
         _             => "Run a tool by name",
     }
 }
