@@ -120,6 +120,30 @@ pub(crate) fn exec_edit_file(ctx: &ToolCtx, args: &str) -> String {
     }
     let full_path = cwd_join(ctx, path_str);
 
+    // Auto-detect file size and pick the best edit strategy
+    let line_count = std::fs::read_to_string(&full_path)
+        .ok()
+        .map(|c| c.lines().count())
+        .unwrap_or(0);
+    let is_small_file = line_count > 0 && line_count < 50;
+
+    // Small file + content provided → auto switch to write_file (faster, no matching)
+    if is_small_file && !new.is_empty() && target.is_none() {
+        let bak = backup_before_write(&full_path);
+        let bak_info = bak.map(|b| format!(" [backup: {}]", b.display())).unwrap_or_default();
+        match std::fs::write(&full_path, new) {
+            Ok(_) => {
+                let diff = diff_preview(ctx, path_str);
+                if !diff.is_empty() {
+                    return format!("written {} (auto: small file, {} lines){}\n{}", full_path.display(), line_count, bak_info, diff);
+                } else {
+                    return format!("written {} (auto: small file, {} lines){}", full_path.display(), line_count, bak_info);
+                }
+            }
+            Err(e) => return format!("error writing {}: {e}", full_path.display()),
+        }
+    }
+
     // New fast path: target-based editing (no old text needed)
     if let Some(tgt) = target {
         let content = match std::fs::read_to_string(&full_path) {

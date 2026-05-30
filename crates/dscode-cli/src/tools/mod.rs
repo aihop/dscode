@@ -156,11 +156,11 @@ fn tool_specs() -> Vec<ToolSpec> {
                 "type": "object",
                 "properties": {
                     "path": {"type": "string", "description": "File path relative to project root"},
-                    "old": {"type": "string", "description": "Existing text to find (exact match). Not needed if target is provided."},
-                    "new": {"type": "string", "description": "Replacement text (used with old)"},
-                    "target": {"type": "string", "description": "Line number, function name, or symbol to edit. Example: '42', 'fn main', 'struct Foo'. Enables position-based editing."},
-                    "new_lines": {"type": "string", "description": "Replacement content for target-based editing (newlines preserved)"},
-                    "line": {"type": "integer", "description": "Optional 1-based line hint (deprecated, prefer target)"}
+                    "old": {"type": "string", "description": "Existing text to find. Not needed if target is provided or for small files (<50 lines)."},
+                    "new": {"type": "string", "description": "Replacement content (auto write_file for small files)"},
+                    "target": {"type": "string", "description": "Symbol/line to edit. Examples: '42', 'fn main', 'struct Foo', 'impl Bar'. Enables position-based editing with zero text matching."},
+                    "new_lines": {"type": "string", "description": "New content for target-based edit. Use for multi-line replacements."},
+                    "line": {"type": "integer", "description": "1-based line hint for precision on large files"}
                 },
                 "required": ["path"]
             }),
