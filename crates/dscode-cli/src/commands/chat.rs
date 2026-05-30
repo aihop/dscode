@@ -29,9 +29,12 @@ pub struct ChatArgs {
     pub plain: bool,
       #[arg(long, help = "Disable streaming output")]
       pub no_stream: bool,
-      #[arg(long, help = "Approval mode: confirm before writing files or running shell commands")]
-        pub approve: bool,
+    #[arg(long, help = "Approval mode: confirm before writing files or running shell commands")]
+    pub approve: bool,
+    #[arg(long, help = "Reasoning effort for R1 (low, medium, high)")]
+    pub think: Option<String>,
 }
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Message {
     role: String,
@@ -290,6 +293,7 @@ You are running directly in the project root directory. Always use relative path
                 allow_mid_input: true,
                 terminal_width: tw,
                 cwd: std::env::current_dir().unwrap_or_default(),
+                reasoning_effort: args.think.clone(),
             };        match engine.run_loop(&options, history).await {
             Ok((new_api_msgs, usage)) => {
                 if usage.tokens_out > 0 {

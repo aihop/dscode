@@ -139,6 +139,7 @@ pub async fn call_stream(
     narrow: bool,
     silent: bool,
     terminal_width: u16,
+    reasoning_effort: Option<&str>,
 ) -> Result<StreamResult, String> {
     use futures_util::StreamExt;
 
@@ -149,6 +150,9 @@ pub async fn call_stream(
         "stream": true,
         "max_tokens": 65536,
     });
+    if let Some(re) = reasoning_effort {
+        body["reasoning_effort"] = serde_json::Value::String(re.to_string());
+    }
     if let Some(t) = tools {
         if !t.is_empty() {
             body["tools"] = serde_json::Value::Array(t.to_vec());

@@ -133,7 +133,9 @@ fn inner_run() -> std::process::ExitCode {
                     system: None,
                     plain: false,
                     no_stream: false,
-                    approve: false,            }));
+                    approve: false,
+                    think: None,
+            }));
         }
     }
 

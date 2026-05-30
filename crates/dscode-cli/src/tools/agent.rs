@@ -165,6 +165,7 @@ async fn run_sub_agent(
         allow_mid_input: false,
         terminal_width: 80,
         cwd: cwd.to_path_buf(),
+        reasoning_effort: None,
     };
 
     match engine.run_loop(&options, history).await {

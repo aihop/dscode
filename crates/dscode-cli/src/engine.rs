@@ -13,6 +13,7 @@ pub struct AgentOptions {
     pub allow_mid_input: bool,
     pub terminal_width: u16,
     pub cwd: std::path::PathBuf,
+    pub reasoning_effort: Option<String>,
 }
 
 pub struct AgentEngine {
@@ -72,6 +73,7 @@ impl AgentEngine {
                 options.narrow,
                 options.silent,
                 options.terminal_width,
+                    options.reasoning_effort.as_deref(),
             ).await?;
 
             // Accumulate usage
@@ -109,6 +111,7 @@ impl AgentEngine {
                     options.narrow,
                     options.silent,
                     options.terminal_width,
+                    options.reasoning_effort.as_deref(),
                 ).await?;
 
                 accumulated_content.push_str(&next_res.content);

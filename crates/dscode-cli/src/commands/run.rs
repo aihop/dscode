@@ -77,6 +77,7 @@ pub async fn run(args: &RunArgs) {
           allow_mid_input: false,
           terminal_width: tw,
           cwd: std::env::current_dir().unwrap_or_default(),
+          reasoning_effort: None,
       };
     match engine.run_loop(&options, api_msgs).await {
         Ok(_) => {}
