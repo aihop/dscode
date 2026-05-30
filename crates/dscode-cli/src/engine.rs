@@ -59,6 +59,7 @@ impl AgentEngine {
  let turn_start = std::time::Instant::now();
         let mut current_tools = options.tools.clone();
         let mut expanded = false;
+        let mut edit_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
 
         loop {
             round += 1;
@@ -155,6 +156,41 @@ impl AgentEngine {
                 assistant_msg["tool_calls"] = Value::Array(tc_json);
                 api_msgs.push(assistant_msg);
 
+                    // Track file edits to detect infinite loops
+                    let edit_tools = ["edit_file", "write_file", "fim_edit", "apply_patch"];
+                    for tc in &stream_res.tool_calls {
+                        if tc.name == "finish" || tc.name == "/done" {
+                            // Model explicitly signals completion
+                            if !options.silent { eprintln!("\x1B[90m─ finish\x1B[0m"); }
+                            // Don't push anything, just break out of the outer loop
+                            // We'll handle this by modifying the loop state
+                            // Actually, let me use a different approach - set a flag
+                        }
+                        if edit_tools.contains(&tc.name.as_str()) {
+                            if let Ok(v) = serde_json::from_str::<Value>(&tc.arguments) {
+                                if let Some(p) = v["path"].as_str() {
+                                    *edit_counts.entry(p.to_string()).or_insert(0) += 1;
+                                }
+                            }
+                        }
+                    }
+                    // Check if finish was called
+                    let has_finish = stream_res.tool_calls.iter().any(|tc| tc.name == "finish" || tc.name == "/done");
+                    if has_finish {
+                        // Model said it's done - break the loop
+                        if !options.silent { eprintln!("\x1B[90m─ task complete\x1B[0m"); }
+                        break;
+                    }
+                    // Check for repeated edits on the same file
+                    for (path, count) in edit_counts.iter() {
+                        if *count >= 4 {
+                            api_msgs.push(json!({
+                                "role": "system",
+                                "content": format!("[NOTE] You have edited '{}' {} times. If you are stuck, call finish() to stop or use write_file with the full file content.", path, count)
+                            }));
+                            break;
+                        }
+                    }
                     // Execute tools (with optional approval gate)
                     for tc in &stream_res.tool_calls {
                         let skip = if options.approval_mode && needs_approval(&tc.name) {
